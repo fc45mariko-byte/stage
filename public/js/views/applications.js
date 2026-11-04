@@ -2,6 +2,7 @@ import { api, html, fmtDate, statusPill, AREA_LABEL, STATUS_LABEL } from '../cor
 
 const GROUPS = [
   ['In preparation', ['generating', 'draft', 'awaiting_approval']],
+  ['In the outbox', ['queued']],
   ['Sent', ['sent', 'follow_up']],
   ['Interviews', ['interview']],
   ['Closed', ['accepted', 'rejected']],

@@ -86,7 +86,7 @@ export function apiRouter() {
       followUps: all(`SELECT a.id, o.name, s.finished_at FROM applications a JOIN send_attempts s ON s.id = a.sent_attempt_id
         JOIN opportunities op ON op.id = a.opportunity_id JOIN organizations o ON o.id = op.organization_id
         WHERE a.status = 'sent' AND s.finished_at < ? AND a.id NOT IN (SELECT application_id FROM application_events WHERE type IN ('response','follow_up'))`, new Date(Date.now() - 14 * 864e5).toISOString()),
-      awaiting: all(`SELECT a.id, a.status, o.name FROM applications a JOIN opportunities op ON op.id = a.opportunity_id JOIN organizations o ON o.id = op.organization_id WHERE a.status IN ('draft','awaiting_approval','generating') ORDER BY a.updated_at DESC LIMIT 6`),
+      awaiting: all(`SELECT a.id, a.status, o.name FROM applications a JOIN opportunities op ON op.id = a.opportunity_id JOIN organizations o ON o.id = op.organization_id WHERE a.status IN ('draft','awaiting_approval','generating','queued') ORDER BY a.updated_at DESC LIMIT 6`),
       openQuestions: prof.questions.filter((q) => q.status === 'open').length,
       suggestedSkills: prof.transferable.filter((t) => t.status === 'suggested').length,
       handbook: Boolean(currentHandbook()),

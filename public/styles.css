@@ -213,7 +213,7 @@ details[open] summary::before { content: '– '; }
 .final { border: 1px solid var(--accent); background: #fbfbf4; }
 .pill { display: inline-block; font-size: .74rem; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); white-space: nowrap; }
 .pill.draft, .pill.generating { background: var(--surface-2); }
-.pill.awaiting_approval { background: var(--warn-soft); color: var(--warn); border-color: #e3d2ad; }
+.pill.awaiting_approval, .pill.queued { background: var(--warn-soft); color: var(--warn); border-color: #e3d2ad; }
 .pill.sent, .pill.follow_up { background: var(--accent-soft); color: var(--accent-ink); border-color: #c9ccb0; }
 .pill.interview, .pill.accepted { background: var(--accent); color: #fff; border-color: var(--accent); }
 .pill.rejected, .pill.withdrawn { background: var(--surface-2); color: var(--muted); }

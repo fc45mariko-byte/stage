@@ -1,6 +1,7 @@
 import { api, html, bind, toast, fmtDate, statusPill, spinner, hostOf, STATUS_LABEL } from '../core.js';
 
 const POST_SEND = ['sent', 'follow_up', 'interview', 'rejected', 'accepted'];
+const ARCHIVED = ['queued', ...POST_SEND];
 let dirty = false;
 window.__stageBlockNav = () => {
   if (dirty && !confirm('You have unsaved changes. Leave without saving?')) { history.back(); return true; }
@@ -10,7 +11,7 @@ window.__stageBlockNav = () => {
 
 function steps(a) {
   const s = a.status;
-  const idx = POST_SEND.includes(s) ? 4 : s === 'awaiting_approval' ? 2 : a.cv ? 1 : 0;
+  const idx = POST_SEND.includes(s) ? 4 : s === 'queued' ? 3 : s === 'awaiting_approval' ? 2 : a.cv ? 1 : 0;
   const list = ['Documents written', 'Reviewed & approved', 'Final approval & send', 'Archived'];
   return html`<div class="steps">${list.map((l, i) => html`<div class="step ${i < idx ? 'done' : i === idx ? 'current' : ''}"><span class="num">${i < idx ? '✓' : i + 1}</span>${l}</div>`)}</div>`;
 }
@@ -127,7 +128,7 @@ function sendTab(d) {
     <tr><th>Organization</th><td>${d.organization.name}<div class="xs muted"><a href="${d.organization.website}" target="_blank" rel="noopener noreferrer">${d.organization.website}</a></div></td></tr>
     <tr><th>Recipient</th><td class="break">${d.contact.email} <span class="tag verified">Verified</span><div class="xs muted">${d.contact.status_detail}. It will be checked again just before sending.</div></td></tr>
     <tr><th>Position</th><td>${a.position_title || d.opportunity.position_title || '—'} <span class="muted small">(${d.opportunity.kind === 'published' ? 'published offer' : 'spontaneous application'})</span></td></tr>
-    <tr><th>From</th><td>${ready ? `${d.email.sender} via ${d.email.provider === 'gmail' ? 'Gmail' : 'SMTP'}` : html`<span class="tag warn">No email account connected</span>`}</td></tr>
+    <tr><th>From</th><td>${ready ? (d.email.provider === 'assistant_relay' ? html`${d.email.sender} via Gmail <div class="xs muted">Outbox mode: after you confirm, the email waits in the outbox and is sent from your Gmail by your Claude assistant, exactly as shown here. It is marked as sent only once Gmail confirms it.</div>` : `${d.email.sender} via ${d.email.provider === 'gmail' ? 'Gmail' : 'SMTP'}`) : html`<span class="tag warn">No email account connected</span>`}</td></tr>
     <tr><th>Subject</th><td>${a.email_subject}</td></tr>
     <tr><th>Message</th><td><div class="email-body">${a.email_body}</div></td></tr>
     <tr><th>Attachments</th><td>CV (PDF) · ${a.language === 'en' ? 'Cover letter' : 'Lettre de motivation'} (PDF)</td></tr>
@@ -149,6 +150,13 @@ function sendTab(d) {
 function recordTab(d) {
   const a = d.application;
   const sent = d.attempts.find((x) => x.id === a.sent_attempt_id);
+  if (a.status === 'queued' && sent) {
+    const docById0 = Object.fromEntries(d.documents.map((x) => [x.id, x]));
+    return html`<h2>In the outbox</h2>
+      <div class="notice warn section"><strong>Not sent yet.</strong> You confirmed this application on ${fmtDate(sent.created_at, true)}. It is waiting for your Claude assistant to send it from ${sent.sender} via Gmail. It will be marked as sent only when Gmail returns a message ID.</div>
+      <table class="summary-table section"><tr><th>To</th><td>${sent.recipient}</td></tr><tr><th>Subject</th><td>${sent.subject}</td></tr><tr><th>Message</th><td><div class="email-body">${sent.body}</div></td></tr></table>
+      <div class="section"><div class="eyebrow">Documents that will be attached (archived, locked)</div>${[sent.cv_document_id, sent.letter_document_id].map((id) => docById0[id]).filter(Boolean).map((doc) => html`<div class="doc-row"><div class="doc-main"><span class="doc-icon"></span><div class="break"><div>${doc.filename}</div><div class="xs muted mono">${doc.sha256.slice(0, 16)}…</div></div></div><a class="btn small" target="_blank" rel="noopener" href="/api/documents/${doc.id}/file">Open</a></div>`)}</div>`;
+  }
   const docById = Object.fromEntries(d.documents.map((x) => [x.id, x]));
   const docRow = (doc) => doc && html`<div class="doc-row"><div class="doc-main"><span class="doc-icon"></span><div class="break"><div>${doc.filename}</div><div class="xs muted">${doc.label} · ${(doc.size / 1024).toFixed(0)} KB · <span class="mono" title="SHA-256">${doc.sha256.slice(0, 16)}…</span></div></div></div>
     <div class="btn-row"><a class="btn small" target="_blank" rel="noopener" href="/api/documents/${doc.id}/file">Open</a><a class="btn small ghost" href="/api/documents/${doc.id}/file?download=1">Download</a></div></div>`;
@@ -189,19 +197,19 @@ export async function mount(el, { parts, query }) {
   let v = Date.now();
   dirty = false;
 
-  const defaultTab = () => (POST_SEND.includes(d.application.status) ? 'record' : d.application.status === 'awaiting_approval' ? 'send' : 'cv');
+  const defaultTab = () => (ARCHIVED.includes(d.application.status) ? 'record' : d.application.status === 'awaiting_approval' ? 'send' : 'cv');
   let tab = query.tab || defaultTab();
 
   const render = () => {
     const a = d.application;
     const editable = ['draft'].includes(a.status) || a.status === 'awaiting_approval';
-    const tabs = POST_SEND.includes(a.status)
+    const tabs = ARCHIVED.includes(a.status)
       ? [['record', 'Record'], ['history', 'Draft versions']]
       : [['cv', 'CV'], ['letter', 'Cover letter'], ['email', 'Email & recipient'], ['send', a.status === 'awaiting_approval' ? 'Final approval' : 'Review & approve'], ['history', 'Versions']];
     if (!tabs.some((t) => t[0] === tab)) tab = tabs[0][0];
     let body;
     if (a.status === 'generating') body = spinner('The agent is writing the CV and cover letter, then fact-checking them against your profile. This usually takes one to three minutes.');
-    else if (!a.cv && !POST_SEND.includes(a.status)) {
+    else if (!a.cv && !ARCHIVED.includes(a.status)) {
       body = html`${a.generation_error ? html`<div class="notice danger"><strong>Generation failed.</strong> ${a.generation_error}</div>` : ''}
         <div class="empty section"><div class="serif">No documents yet</div>
         <p>The agent writes a CV and a cover letter specific to ${d.organization.name}.</p>
@@ -224,7 +232,7 @@ export async function mount(el, { parts, query }) {
       <p class="lede">${a.position_title || d.opportunity.position_title || ''} · ${d.organization.city || ''} · <a href="${d.organization.website}" target="_blank" rel="noopener noreferrer">${hostOf(d.organization.website)}</a></p>
     </div><div class="btn-row">${statusPill(a.status)}${['draft', 'awaiting_approval'].includes(a.status) ? html`<button class="btn small ghost danger" data-action="discard">Discard</button>` : ''}</div></div>
     ${steps(a)}
-    ${a.status !== 'generating' && (a.cv || POST_SEND.includes(a.status)) ? html`<div class="tabs">${tabs.map(([k, l]) => html`<a href="#/applications/${id}?tab=${k}" class="${tab === k ? 'active' : ''}">${l}</a>`)}</div>` : ''}
+    ${a.status !== 'generating' && (a.cv || ARCHIVED.includes(a.status)) ? html`<div class="tabs">${tabs.map(([k, l]) => html`<a href="#/applications/${id}?tab=${k}" class="${tab === k ? 'active' : ''}">${l}</a>`)}</div>` : ''}
     ${a.status === 'awaiting_approval' && tab !== 'send' ? html`<div class="notice small">Approved ${fmtDate(a.approved_at, true)}. Editing will withdraw the approval.</div><div class="section"></div>` : ''}
     ${body}`.s;
     if (a.status === 'generating') pollGenerating();
@@ -255,7 +263,7 @@ export async function mount(el, { parts, query }) {
       restore: async (b) => { await api(`versions/${b.dataset.vid}/restore`, { method: 'POST' }); toast('Version restored as a new draft'); tab = 'cv'; await reload(); },
       send: async () => {
         const r = await api(`applications/${id}/send`, { method: 'POST', body: { confirm: true, approvedHash: d.application.approved_hash } });
-        toast(`Sent. Message ID ${r.messageId}`);
+        toast(r.queued ? 'Confirmed and placed in the outbox. Not sent yet.' : `Sent. Message ID ${r.messageId}`);
         tab = 'record'; await reload();
       },
     },

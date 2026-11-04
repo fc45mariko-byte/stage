@@ -8,11 +8,13 @@ import { gmailConfigured, gmailConnected, gmailAccount, gmailSendRaw } from './g
 
 export function emailStatus() {
   const smtpReady = Boolean(config.smtp.host && config.smtp.user && config.smtp.pass);
-  const provider = gmailConnected() ? 'gmail' : smtpReady ? 'smtp' : null;
+  const relay = process.env.EMAIL_RELAY === 'assistant' && process.env.EMAIL_RELAY_SENDER;
+  const provider = gmailConnected() ? 'gmail' : smtpReady ? 'smtp' : relay ? 'assistant_relay' : null;
   return {
     provider,
     ready: Boolean(provider),
-    sender: provider === 'gmail' ? gmailAccount() : provider === 'smtp' ? config.smtp.from : null,
+    sender: provider === 'gmail' ? gmailAccount() : provider === 'smtp' ? config.smtp.from : provider === 'assistant_relay' ? process.env.EMAIL_RELAY_SENDER : null,
+    relay: Boolean(relay),
     gmail: { configured: gmailConfigured(), connected: gmailConnected(), account: gmailAccount() },
     smtp: { configured: smtpReady, host: config.smtp.host || null, user: config.smtp.user || null },
   };

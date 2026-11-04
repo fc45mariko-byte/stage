@@ -53,7 +53,7 @@ export const fmtDate = (iso, withTime = false) => {
 export const fmtTime = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
 export const STATUS_LABEL = {
-  draft: 'Draft', generating: 'Writing…', awaiting_approval: 'Awaiting approval', sent: 'Sent', follow_up: 'Follow-up needed',
+  draft: 'Draft', generating: 'Writing…', awaiting_approval: 'Awaiting approval', queued: 'In the outbox', sent: 'Sent', follow_up: 'Follow-up needed',
   interview: 'Interview', rejected: 'Rejected', accepted: 'Accepted', withdrawn: 'Discarded',
 };
 export const statusPill = (s) => html`<span class="pill ${s}">${STATUS_LABEL[s] || s}</span>`;

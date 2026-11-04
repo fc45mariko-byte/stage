@@ -11,7 +11,7 @@ export async function mount(el, { overview }) {
   if (ov.openQuestions) todo.push(['#/profile?tab=questions', `${ov.openQuestions} question${ov.openQuestions > 1 ? 's' : ''} about your profile`, 'Answers make the documents more precise; nothing is guessed meanwhile']);
   if (ov.suggestedSkills) todo.push(['#/profile?tab=transferable', `${ov.suggestedSkills} suggested transferable skill${ov.suggestedSkills > 1 ? 's' : ''} to confirm or reject`, 'Not used in documents until you confirm them']);
   if (s.newOpportunities) todo.push(['#/discover', `${s.newOpportunities} new opportunit${s.newOpportunities > 1 ? 'ies' : 'y'} to review`, 'Discover']);
-  for (const a of ov.awaiting) todo.push([`#/applications/${a.id}`, `${a.name}`, a.status === 'awaiting_approval' ? 'Ready: waiting for your final approval to send' : a.status === 'generating' ? 'Documents being written' : 'Draft documents to review']);
+  for (const a of ov.awaiting) todo.push([`#/applications/${a.id}`, `${a.name}`, a.status === 'awaiting_approval' ? 'Ready: waiting for your final approval to send' : a.status === 'queued' ? 'In the outbox, waiting to be sent from Gmail' : a.status === 'generating' ? 'Documents being written' : 'Draft documents to review']);
   for (const f of ov.followUps) todo.push([`#/applications/${f.id}`, `Follow up with ${f.name}?`, `Sent ${fmtDate(f.finished_at)}, no response recorded`]);
 
   el.innerHTML = html`

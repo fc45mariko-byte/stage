@@ -202,6 +202,18 @@ export async function sendApplication(appId, { confirm, approvedHash }) {
     return { cvDoc, letterDoc, attemptId };
   });
 
+  if (st.provider === 'assistant_relay') {
+    // Queued: the exact files are archived now; the Claude assistant session
+    // sends them through Gmail and reports the Gmail message id back
+    // (scripts/relay.mjs). The application is NOT marked sent until then.
+    tx(() => {
+      run("UPDATE send_attempts SET status = 'queued', provider = 'gmail_assistant', sender = ? WHERE id = ?", st.sender, attemptId);
+      run("UPDATE applications SET status = 'queued', sent_attempt_id = ?, updated_at = ? WHERE id = ?", attemptId, now(), appId);
+    });
+    logActivity('send', `Application to ${org.name} (${contact.email}) approved for sending and placed in the outbox; documents archived (CV ${cvDoc.sha256.slice(0, 10)}, letter ${letterDoc.sha256.slice(0, 10)}). Not sent yet.`, { type: 'application', id: appId });
+    return { attemptId, provider: 'gmail_assistant', queued: true, messageId: null };
+  }
+
   try {
     const r = await sendEmail({
       fromName: profile.identity.full_name, to: contact.email, subject: app.email_subject, text: app.email_body,
@@ -219,6 +231,36 @@ export async function sendApplication(appId, { confirm, approvedHash }) {
     logActivity('error', `Sending to ${org.name} failed: ${e.message}. Nothing was sent; the application is still awaiting approval.`, { type: 'application', id: appId });
     throw new UserError(`Not sent: ${e.message}`, 502);
   }
+}
+
+/** Outbox (assistant relay): list, complete, fail. Used by scripts/relay.mjs. */
+export function outbox() {
+  return all(`SELECT s.*, o.name AS org_name FROM send_attempts s JOIN applications a ON a.id = s.application_id
+    JOIN opportunities op ON op.id = a.opportunity_id JOIN organizations o ON o.id = op.organization_id WHERE s.status = 'queued' ORDER BY s.id`);
+}
+
+export function completeRelay(attemptId, { messageId, threadId }) {
+  const at = get('SELECT * FROM send_attempts WHERE id = ?', attemptId);
+  if (!at || at.status !== 'queued') throw new UserError('No queued attempt with this id');
+  if (!messageId) throw new UserError('A Gmail message id is required');
+  const org = loadContext(at.application_id).org;
+  tx(() => {
+    run("UPDATE send_attempts SET status = 'sent', provider_message_id = ?, provider_response = ?, finished_at = ? WHERE id = ?", messageId, JSON.stringify({ id: messageId, threadId }), now(), attemptId);
+    run("UPDATE applications SET status = 'sent', updated_at = ? WHERE id = ?", now(), at.application_id);
+    insert('INSERT INTO application_events(application_id, type, occurred_on, content, created_at) VALUES (?, ?, ?, ?, ?)', at.application_id, 'status', now().slice(0, 10), `Sent to ${at.recipient} via Gmail (message ${messageId})`, now());
+  });
+  logActivity('send', `Application sent to ${org.name} (${at.recipient}) via Gmail; Gmail message id ${messageId}`, { type: 'application', id: at.application_id });
+}
+
+export function failRelay(attemptId, error) {
+  const at = get('SELECT * FROM send_attempts WHERE id = ?', attemptId);
+  if (!at || at.status !== 'queued') throw new UserError('No queued attempt with this id');
+  const org = loadContext(at.application_id).org;
+  tx(() => {
+    run("UPDATE send_attempts SET status = 'failed', error = ?, finished_at = ? WHERE id = ?", String(error), now(), attemptId);
+    run("UPDATE applications SET status = 'awaiting_approval', sent_attempt_id = NULL, updated_at = ? WHERE id = ?", now(), at.application_id);
+  });
+  logActivity('error', `Sending to ${org.name} failed: ${error}. Nothing was sent; the application is back to awaiting approval.`, { type: 'application', id: at.application_id });
 }
 
 export function setStatus(appId, status, note) {
