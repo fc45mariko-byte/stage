@@ -999,10 +999,8 @@ function viewAgent() {
   </section>
   <section class="section"><h2>Notifications</h2><div class="section">
     ${row('Phone (Claude app)', true, 'Each run that finds something ends with a push notification from the Claude app. Turn on Claude notifications on your phone to receive them.', '')}
-    <div class="doc-row"><div><div><b>This browser</b></div><div class="small muted">${np === 'granted' ? 'On: when this page is open in another tab, new discoveries show as a browser notification.' : np === 'denied' ? 'Blocked in this browser. Allow notifications for claude.ai in your browser settings.' : np === 'unsupported' ? 'This view does not allow browser notifications. Phone and email notifications still work.' : 'Shows a notification when new discoveries arrive while this page is open in a tab.'}</div></div>
+    <div class="doc-row"><div><div><b>This browser</b></div><div class="small muted">${np === 'granted' ? 'On: when this page is open in another tab, new discoveries show as a browser notification.' : np === 'denied' ? 'Blocked in this browser. Allow notifications for claude.ai in your browser settings.' : np === 'unsupported' ? 'This view does not allow browser notifications. Phone notifications still work.' : 'Shows a notification when new discoveries arrive while this page is open in a tab.'}</div></div>
       ${np === 'default' ? html`<button class="btn small" data-act="browser-notif">Turn on</button>` : np === 'granted' ? html`<span class="tag verified">On</span>` : html`<span class="tag warn">Off</span>`}</div>
-    <div class="doc-row"><div><div><b>Email summary</b></div><div class="small muted">After a run that finds something, your agent emails a short summary to ${S.profile.identity.email} (only to you).</div></div>
-      <label class="check"><input type="checkbox" data-act-change="notify-email" ${cfg.notifyEmail ? 'checked' : ''}><span>${cfg.notifyEmail ? 'On' : 'Off'}</span></label></div>
   </div></section>
   <section class="section"><h2>What it looks for</h2>
     <form data-form="focus" class="stack section">
@@ -1029,7 +1027,6 @@ document.addEventListener('change', async (e) => {
     if (t.checked) { S.ui.shownHash[id] = await approvalHash(appById(id)); btn.disabled = false; } else { delete S.ui.shownHash[id]; btn.disabled = true; }
   }
   if (t.dataset.actChange === 'toggle-exp') t.closest('.exp').classList.toggle('off', !t.checked);
-  if (t.dataset.actChange === 'notify-email') guarded(null, async () => { await C.db.doc('agent/config').update({ notifyEmail: t.checked, updatedAt: nowIso() }); toast(t.checked ? 'Email summaries on' : 'Email summaries off'); });
 });
 async function guarded(btn, fn) {
   if (btn) btn.disabled = true;

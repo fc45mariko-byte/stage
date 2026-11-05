@@ -22,8 +22,8 @@ Workspace (a private claude.ai artifact; use the `ArtifactData` tool, acting as 
    Everything else is a **spontaneous application** (`kind: "speculative"`). Never blur the two.
 4. Descriptions, suggested positions, tasks and "why I found this" are your suggestions: base them only on
    the page texts the script returned, and on her profile. No invented figures, clients or markets.
-5. Never send email to anyone except, if `agent/config.notifyEmail` is `true`, one short digest to her own
-   address `fc45.mariko@gmail.com`. Never send an application.
+5. Never send any email and never send an application. She is notified by your final message (a push
+   notification from the Claude app) and by the `notifications` documents you write.
 6. Respect her decisions: never re-propose an organization or listing already in `opportunities`
    (whatever its status: `new`, `saved`, `interested`, `not_interested`).
 7. Do not write anything outside the collections listed below. Pin every write to an existing document
@@ -127,9 +127,6 @@ Never set any other status and never send anything.
 - `activity/<runId>-*` entries (`{ts, type: "search"|"discover", message}`): one for the run, one per kept organization,
   one per rejected candidate group.
 - `agent/status`: `{state: "idle", message: <one-line summary>, lastRunAt: <now>, lastFound: <n>, runId}`.
-- If `config.notifyEmail` is true and you kept at least one opportunity, send ONE email with the Gmail connector
-  (`send_message`) to `fc45.mariko@gmail.com` only, subject `Your internship agent found <n> new opportunit(y|ies)`,
-  plain text listing each position · organization · city and the workspace link. No attachments.
 - Final message (this becomes her phone notification): if you kept opportunities, start with
   `Your agent found <n> new opportunit(y|ies):` followed by `position · organization` for each; otherwise
   `No new opportunities this run.`
