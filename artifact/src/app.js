@@ -437,8 +437,8 @@ async function decide(oppId, decision) {
   let app = S.apps.find((a) => a.oppId === oppId && a.status !== 'withdrawn');
   if (!app) {
     const id = uid('app');
-    const c = bestContact(opp);
-    const doc = { oppId, orgName: opp.name, website: opp.website, city: opp.city || '', area: opp.area || '', kind: opp.kind, listingUrl: opp.listingUrl || '', position: opp.position || '', status: 'preparing', language: 'fr', contact: c ? { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, verified: true } : null, cv: null, letter: null, emailSubject: '', emailBody: '', review: null, events: [], failedAttempts: [], createdAt: nowIso(), updatedAt: nowIso() };
+    const c = bestContact(opp) || (opp.contacts || []).find((x) => x.status !== 'failed');
+    const doc = { oppId, orgName: opp.name, website: opp.website, city: opp.city || '', area: opp.area || '', kind: opp.kind, listingUrl: opp.listingUrl || '', position: opp.position || '', status: 'preparing', language: 'fr', contact: c ? { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, verified: c.status === 'verified' } : null, cv: null, letter: null, emailSubject: '', emailBody: '', review: null, events: [], failedAttempts: [], createdAt: nowIso(), updatedAt: nowIso() };
     await C.db.collection('applications').doc(id).set(doc);
     await log('decision', `Your agent started preparing an application to ${opp.name}`, { app: id });
     app = { id, ...doc };
@@ -803,7 +803,7 @@ function recipientBlock(a) {
   if (cs === 'verified') return html`<div class="rcpt"><div><div class="eyebrow">To</div><div class="break"><b>${a.contact.email}</b> <span class="tag verified">Verified</span></div><div class="xs muted break">${a.contact.detail || ''}</div></div>${others.length ? html`<button class="btn small ghost" data-act="edit" data-v="recipient">Change</button>` : ''}</div>`;
   if (cs === 'reviewed') return html`<div class="rcpt"><div><div class="eyebrow">To</div><div class="break"><b>${a.contact.email}</b> <span class="tag warn">Confirmed by you</span></div><div class="xs muted">Your agent could not verify this address on the organization's website; you confirmed it on ${fmtDate(a.contact.reviewedAt)}.</div></div><button class="btn small ghost" data-act="edit" data-v="recipient">Change</button></div>`;
   return html`<div class="rcpt needs"><div class="stack"><div class="eyebrow">To</div>
-    <div><b>${cs === 'missing' ? 'Your agent could not find a verified address for this organization.' : `Please review ${a.contact.email}: it could not be verified on their website.`}</b></div>
+    <div><b>${cs === 'missing' ? 'Your agent could not find a verified address for this organization.' : `Please review ${a.contact.email}: it could not be verified on their own website.`}</b>${a.contact?.detail ? html`<div class="xs muted break">${a.contact.detail}${a.contact.evidenceUrl ? html` · <a href="${a.contact.evidenceUrl}" target="_blank" rel="noopener noreferrer">see the page</a>` : ''}</div>` : ''}</div>
     <form data-form="recipient" class="stack">
       <div class="field"><label class="lbl" for="rc-email">Address to send to</label><input id="rc-email" name="email" type="email" value="${a.contact?.email || ''}" required placeholder="recrutement@organization.fr"></div>
       <div class="field"><label class="lbl" for="rc-src">Where you found it (optional)</label><input id="rc-src" name="source" type="text" placeholder="e.g. the Contact page of their website"></div>

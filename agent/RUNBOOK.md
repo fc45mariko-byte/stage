@@ -48,8 +48,23 @@ Make a run id: `run-YYYYMMDD-HHMM` (UTC).
   Build the set of known domains and known listing URLs.
 
 ### 2. Check that websites can be opened
-`node scripts/verify-org.mjs --check`. If `online` is false:
-- update `agent/status` to `{state: "blocked", message: "I can't open websites from my environment, so I can't verify organizations. Change Network access to Full in the Claude Code environment settings.", lastCheckAt: <now>, runId}`;
+`node scripts/verify-org.mjs --check`.
+
+**If `online` is true:** continue with steps 3–7 (full verification by opening each website).
+
+**If `online` is false but `ANTHROPIC_API_KEY` is set** (`test -n "$ANTHROPIC_API_KEY"`): use *search mode*, which verifies
+through Anthropic's web search quotes instead of opening sites:
+- write her profile (`profile/current.data`) to `profile.json` and `{domains: [...known], listings: [...known]}` to `known.json` (scratchpad);
+- for each area in `config.areas` (default `orleans`, `paris`):
+  `node scripts/discover-api.mjs --area <area> --profile profile.json --known known.json --out <area>.json --max 3 --focus "<config.focus>"`
+  (add the domains kept for the first area to `known.json` before running the second);
+- each output has `kept: [{id, doc}]` (ready-made `opportunities` docs; contacts are `verified` only when quoted from the
+  organization's own pages, otherwise `to_review`) and `rejected`. Do not edit the facts in these docs.
+- set `doc.foundByRun = runId`, then go to step 7 to write them (one notification per kept doc), and to step 9.
+Skip steps 3–6 in search mode, except `verify_email` requests, which you leave pending.
+
+**If `online` is false and there is no key:**
+- update `agent/status` to `{state: "blocked", message: "I can't open websites from my environment, so I can't verify organizations. Either set Network access to Full in the Claude Code environment settings, or add your Anthropic API key there as the environment variable ANTHROPIC_API_KEY.", lastCheckAt: <now>, runId}`;
 - write `agentRuns/<runId>` `{startedAt, finishedAt, outcome: "blocked", detail}`;
 - if the previous `agent/status.state` was not already `blocked`, also add one `notifications/<runId>` doc
   `{ts, type: "agent", title: "Your agent is blocked", body: "<the message>", read: false}`;
