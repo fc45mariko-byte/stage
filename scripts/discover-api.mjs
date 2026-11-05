@@ -31,7 +31,7 @@ const log = (...a) => console.error(new Date().toISOString().slice(11, 19), ...a
 const AREA = { orleans: 'Orléans and its surrounding area (Loiret, Centre-Val de Loire)', paris: 'Paris and Île-de-France' };
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,24}/gi;
 const LOC = {
-  orleans: /(orl[ée]ans|\b45\d{3}\b|loiret|saint-jean-de-braye|saint-jean-de-la-ruelle|saint-jean-le-blanc|olivet|fleury-les-aubrais|saran|ingr[ée]|ormes|chécy|saint-cyr-en-val|meung-sur-loire|beaugency|gien|montargis|pithiviers)/i,
+  orleans: /(orl[ée]ans|\b45\d{3}\b|loiret|saint-jean-de-braye|saint-jean-de-la-ruelle|saint-jean-le-blanc|olivet|fleury-les-aubrais|saran|ingr[ée]|ormes|chécy|saint-cyr-en-val|boigny-sur-bionne|semoy|meung-sur-loire|beaugency|gien|montargis|pithiviers)/i,
   paris: /(paris|\b75\d{3}\b|\b9[1-5]\d{3}\b|\b77\d{3}\b|\b78\d{3}\b|île-de-france|ile-de-france|la d[ée]fense|roissy|rungis)/i,
 };
 const webSearch = (n, city) => ({ type: 'web_search_20260209', name: 'web_search', max_uses: n, user_location: { type: 'approximate', country: 'FR', city, timezone: 'Europe/Paris' } });

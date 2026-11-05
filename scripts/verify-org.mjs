@@ -15,7 +15,7 @@ const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : un
 const out = (o) => { process.stdout.write(`${JSON.stringify(o, null, 1)}\n`); };
 
 const LOCATION = {
-  orleans: /(orl[ée]ans|\b45\d{3}\b|loiret|saint-jean-de-braye|saint-jean-de-la-ruelle|saint-jean-le-blanc|olivet|fleury-les-aubrais|saran|ingr[ée]|ormes|chécy|checy|saint-cyr-en-val|la chapelle-saint-mesmin|meung-sur-loire|beaugency|gien|montargis|pithiviers)/i,
+  orleans: /(orl[ée]ans|\b45\d{3}\b|loiret|saint-jean-de-braye|saint-jean-de-la-ruelle|saint-jean-le-blanc|olivet|fleury-les-aubrais|saran|ingr[ée]|ormes|chécy|checy|saint-cyr-en-val|boigny-sur-bionne|semoy|la chapelle-saint-mesmin|meung-sur-loire|beaugency|gien|montargis|pithiviers)/i,
   paris: /(paris|\b75\d{3}\b|\b9[1-5]\d{3}\b|\b77\d{3}\b|\b78\d{3}\b|île-de-france|ile-de-france|la d[ée]fense|roissy|rungis)/i,
 };
 
