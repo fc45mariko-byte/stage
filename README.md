@@ -1,4 +1,31 @@
-# Stage: a personal internship application agent
+# Stage: a personal internship-search agent
+
+**Open it here:** https://claude.ai/artifact/AvsXCG9873cXhXhaJpkji5 (private, sign in to claude.ai)
+
+```
+THE AGENT WORKS → FINDS AN OPPORTUNITY → YOU GET A NOTIFICATION → YOU SAY "I'M INTERESTED"
+→ IT PREPARES THE APPLICATION → YOU APPROVE → IT SENDS FROM YOUR GMAIL → IT ARCHIVES THE EXACT PDFs
+```
+
+## How it works now
+
+| Part | Where it runs | What it does |
+|---|---|---|
+| **Background agent** | A Claude Code scheduled task ("Internship agent", every morning at 07:44 Paris time) that starts a fresh session | Follows `agent/RUNBOOK.md`: searches job boards and career pages in Orléans and Paris, verifies each organization with `scripts/verify-org.mjs` (opens its website, finds emails on its own pages, checks the listing), evaluates fit against the profile, writes opportunities and notifications into the workspace, and ends with a push notification to the Claude app. |
+| **Workspace** (`artifact/`) | A private claude.ai page | Home screen with the agent's status, new discoveries ("Why I found this for you", Not interested / Save / I'm interested), applications waiting for approval and a short archive. Writing uses your Claude account; sending uses your Gmail connector. |
+| **Self-hosted server** (`server/`, `public/`) | Any Node.js 22 host | The earlier stand-alone version (same rules, its own search loop and Gmail OAuth). Kept for running outside claude.ai. |
+
+### What is required for the agent to search
+The scheduled sessions run in this Claude Code cloud environment. Its **Network access must be set to Full** (cloud environment menu in the session title bar → Edit): the agent has to open each organization's website to verify it and find a real contact address. While access is limited, every run stops at the first check and the workspace shows *"Your agent is blocked"*; nothing is guessed.
+
+### Notifications
+- **Phone:** each scheduled run ends with a push notification from the Claude app (turn on Claude app notifications).
+- **In the workspace:** every discovery is stored as a notification and shown on the home screen until you decide or dismiss it.
+- **Browser:** the page offers browser notifications where the viewer allows them (shown while the page is open in a tab).
+- Email summaries are not available: scheduled tasks on this account cannot be given the Gmail connector.
+
+---
+
 
 A private web app that finds organizations in Orléans and Paris that could host a 6-week L3 LEA internship. It shows them to you, writes a tailored CV and cover letter when you say you're interested, and emails the application only after your explicit final approval. Every document that is sent is archived permanently, byte for byte.
 
