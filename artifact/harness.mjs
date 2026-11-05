@@ -16,15 +16,25 @@ fs.mkdirSync(outDir, { recursive: true });
 const pageBody = fs.readFileSync(path.join(here, 'dist', 'stage.html'), 'utf8');
 const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light}body{margin:0}</style></head><body>${pageBody}</body></html>`;
 
+const opp = (over) => ({
+  name: 'Loire Export Négoce', website: 'https://loire-export.example/', domain: 'loire-export.example', area: 'orleans', city: 'Orléans', industry: 'Négoce de vins (export)',
+  kind: 'published', listingUrl: 'https://loire-export.example/recrutement', listingTitle: 'Stage assistant(e) export', listingSource: 'Company website',
+  summary: 'The company is looking for an intern to support its export sales administration.',
+  description: 'Négociant exportateur de vins du Val de Loire.', position: 'Assistant(e) export', responsibilities: ['Préparer des documents export'], matchReasons: ['Your LEA background is relevant.', 'Your English and Spanish could be useful: they sell to the UK and Spain.'], concerns: ['Small company'], fit: 'strong',
+  contacts: [{ email: 'stages@loire-export.example', evidenceUrl: 'https://loire-export.example/contact', status: 'verified', detail: 'Found on https://loire-export.example/contact (checked 2026-11-05)', checkedAt: '2026-11-05', recommended: true }],
+  sources: ['https://loire-export.example/'], sourcesText: 'Exportateur de vins du Val de Loire vers le Royaume-Uni et l’Espagne. 45000 Orléans.', status: 'new', createdAt: '2026-11-05T07:50:00Z', websiteCheckedAt: '2026-11-05', ...over,
+});
 const seed = {
   'profile/current': { data: seedProfile, version: 1, updatedAt: '2026-11-04T10:00:00Z' },
   'handbook/current': { title: 'Livret de stage LEA', filename: 'livret.pdf', academicYear: 'Année universitaire 2021-2022', requirements: [{ topic: 'duration', requirement: '210 hours', quote: 'Le stage de troisième année de Licence est d’une durée de 210 heures', page: '3' }] },
-  'opportunities/opp1': {
-    name: 'Loire Export Négoce', website: 'https://loire-export.example/', area: 'orleans', city: 'Orléans', industry: 'Négoce de vins (export)', kind: 'speculative', listingUrl: '',
-    description: 'Négociant exportateur de vins du Val de Loire.', position: 'Stage assistant(e) export', responsibilities: ['Préparer des documents export'], matchReasons: ['Anglais C2, espagnol B2'], concerns: ['Petite structure'], fit: 'strong',
-    contacts: [{ email: 'stages@loire-export.example', evidenceUrl: 'https://loire-export.example/contact', status: 'verified', detail: 'Found on https://loire-export.example/contact (fetched 2026-11-04)', checkedAt: '2026-11-04', recommended: true }],
-    sources: ['https://loire-export.example/'], sourcesText: 'Exportateur de vins du Val de Loire vers le Royaume-Uni et l’Espagne. 45000 Orléans.', status: 'new', createdAt: '2026-11-04T10:00:00Z', websiteCheckedAt: '2026-11-04',
-  },
+  'agent/config': { triggerId: 'trig_test', scheduleLabel: 'Every morning', areas: ['orleans', 'paris'], notifyEmail: false, paused: false },
+  'agent/status': { state: 'idle', lastRunAt: '2026-11-05T07:55:00Z', message: 'Found 2 new opportunities in the Orléans area.', lastFound: 2 },
+  'agentRuns/run-1': { startedAt: '2026-11-05T07:40:00Z', finishedAt: '2026-11-05T07:55:00Z', outcome: 'done', candidates: 7, kept: 2, rejected: [{ name: 'Example SA', reason: 'website unreachable' }] },
+  'opportunities/opp1': opp({}),
+  'opportunities/opp2': opp({ name: 'Atelier Logistique Saran', website: 'https://als.example/', domain: 'als.example', kind: 'speculative', listingUrl: '', position: 'Assistant(e) logistique internationale', summary: 'A freight forwarder near Orléans handling shipments to Spain and Latin America.', contacts: [], createdAt: '2026-11-05T07:52:00Z' }),
+  'notifications/n1': { ts: '2026-11-05T07:55:01Z', type: 'opportunity', oppId: 'opp1', title: 'Assistant(e) export', body: 'x', read: false },
+  'notifications/n2': { ts: '2026-11-05T07:55:02Z', type: 'opportunity', oppId: 'opp2', title: 'Assistant(e) logistique internationale', body: 'x', read: false },
+  'activity/a1': { ts: '2026-11-05T07:55:00Z', type: 'search', message: 'Search run finished: 2 new opportunities from 7 candidates' },
 };
 
 const generated = {
@@ -77,6 +87,8 @@ const init = ({ seed, generated }) => {
     callTool: async (server, tool, input) => {
       window.__gmail.push({ server, tool, input });
       if (tool === 'send_message') return { content: [], payload: { id: 'msg-123', threadId: 'thr-1', labelIds: ['SENT'] } };
+      if (tool === 'get_trigger') return { content: [], payload: { trigger: { id: 'trig_test', enabled: true, next_run_at: new Date(Date.now() + 20 * 3600e3).toISOString() } } };
+      if (tool === 'fire_trigger') return { content: [], payload: { ok: true } };
       if (tool === 'search_threads') return { content: [], payload: { threads: [{ id: 'thr-9', viewUrl: 'https://mail.google.com/x', messages: [{ id: 'm9', subject: 'Re: Candidature', snippet: 'Merci pour votre candidature, pouvons-nous convenir d’un entretien ?', sender: 'rh@loire-export.example', date: '2026-11-10T09:00:00Z' }] }] } };
       throw { code: 'tool_error', message: 'unknown' };
     },
@@ -106,60 +118,67 @@ async function setup(viewport) {
 
 const shot = (page, name, full = true) => page.screenshot({ path: path.join(outDir, `${name}.png`), fullPage: full });
 const result = {};
+const sha = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex');
 {
   const { page } = await setup({ width: 1280, height: 860 });
-  await page.goto('https://stage.test/#overview');
-  await page.waitForSelector('.stats');
-  await shot(page, 'd1-overview');
-  await page.goto('https://stage.test/#discover'); await page.waitForSelector('.opp');
-  await shot(page, 'd2-discover');
-  await page.click('[data-act=decide][data-v=interested]');
-  await page.waitForSelector('form[data-form=cv]', { timeout: 15000 });
-  await shot(page, 'd3-cv');
-  await page.click('[data-act=atab][data-v=letter]'); await page.waitForSelector('form[data-form=letter]');
+  await page.goto('https://stage.test/#home');
+  await page.waitForSelector('.disc');
+  result.banner = await page.$eval('.home-head .lede', (e) => e.textContent.trim());
+  result.cards = await page.$$eval('.disc h3', (e) => e.map((x) => x.textContent));
+  await shot(page, 'd1-home');
+  // 1. interested in the published offer (verified contact)
+  await page.click('#disc-opp1 [data-v=interested]');
+  await page.waitForSelector('#confirm-send', { timeout: 15000 });
+  await shot(page, 'd2-review');
+  await page.click('[data-act=edit][data-v=letter]'); await page.waitForSelector('form[data-form=letter]');
   await page.fill('#lt-close', "Je vous prie d'agréer, Madame, Monsieur, mes salutations distinguées.");
-  await page.click('form[data-form=letter] button[type=submit]'); await page.waitForTimeout(300);
-  await shot(page, 'd4-letter');
-  await page.click('form[data-form=letter] [data-act=pdf]'); await page.waitForTimeout(800);
-  await page.click('[data-act=atab][data-v=send]'); await page.click('[data-act=approve]');
-  await page.waitForSelector('#confirm-send');
+  await page.click('form[data-form=letter] button[type=submit]'); await page.waitForSelector('#confirm-send:not([disabled])');
   result.sendDisabledBeforeConfirm = await page.$eval('#send-btn', (b) => b.disabled);
-  await shot(page, 'd5-final');
-  await page.check('#confirm-send');
+  await page.check('#confirm-send'); await page.waitForFunction(() => !document.getElementById('send-btn').disabled);
   await page.click('#send-btn');
   await page.waitForSelector('[data-act=replies]', { timeout: 15000 });
   await page.click('[data-act=replies]'); await page.waitForSelector('[data-act=record-reply]');
   await page.click('[data-act=record-reply]'); await page.waitForTimeout(300);
-  await shot(page, 'd6-record');
+  await shot(page, 'd3-record');
+  // 2. interested in the spontaneous one (no verified address)
+  await page.goto('https://stage.test/#home'); await page.waitForSelector('#disc-opp2');
+  await page.click('#disc-opp2 [data-v=interested]');
+  await page.waitForSelector('form[data-form=recipient]', { timeout: 15000 });
+  result.unverifiedBlocked = await page.$eval('#confirm-send', (b) => b.disabled);
+  await shot(page, 'd4-needs-address');
+  await page.fill('#rc-email', 'contact@als.example'); await page.fill('#rc-src', 'Contact page of their website');
+  await page.check('form[data-form=recipient] [name=confirm]'); await page.click('form[data-form=recipient] button[type=submit]');
+  await page.waitForSelector('#confirm-send:not([disabled])');
+  result.reviewedAllowed = true;
+  // agent page
+  await page.goto('https://stage.test/#agent'); await page.waitForSelector('[data-act=run-now]');
+  await page.click('[data-act=run-now]'); await page.waitForTimeout(300);
+  await shot(page, 'd5-agent');
   const g = await page.evaluate(() => window.__gmail);
   const send = g.find((x) => x.tool === 'send_message');
   const store = await page.evaluate(() => Object.fromEntries(window.__store));
-  const app = Object.entries(store).find(([k]) => k.startsWith('applications/'))[1];
-  result.gmailCalls = g.map((x) => x.tool);
+  const app = Object.entries(store).map(([, v]) => v).find((v) => v.sent);
+  result.calls = g.map((x) => x.tool);
   result.to = send.input.to;
-  result.attachments = send.input.attachments.map((a) => { const b = Buffer.from(a.content, 'base64'); return { filename: a.filename, isPdf: b.subarray(0, 5).toString() === '%PDF-', bytes: b.length, sha: crypto.createHash('sha256').update(b).digest('hex') }; });
-  result.shaMatchesArchive = result.attachments[0].sha === app.sent.cv.sha256 && result.attachments[1].sha === app.sent.letter.sha256;
+  result.attachmentsArePdf = send.input.attachments.map((a) => Buffer.from(a.content, 'base64').subarray(0, 5).toString());
+  result.shaMatchesArchive = sha(send.input.attachments[0].content) === app.sent.cv.sha256 && sha(send.input.attachments[1].content) === app.sent.letter.sha256;
   const blobsSha = await page.evaluate(async () => { const out = {}; for (const [id, b] of window.__blobs) { const h = await crypto.subtle.digest('SHA-256', await b.arrayBuffer()); out[id] = [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join(''); } return out; });
   result.archivedBlobsMatch = blobsSha[app.sent.cv.assetId] === app.sent.cv.sha256 && blobsSha[app.sent.letter.assetId] === app.sent.letter.sha256;
-  result.status = app.status; result.gmailId = app.sent.gmailId; result.events = app.events.map((e) => e.type);
-  result.drafts = Object.keys(store).filter((k) => k.startsWith('drafts/')).length;
+  result.sentStatus = app.status; result.events = app.events.map((e) => e.type);
+  result.notificationsRead = Object.entries(store).filter(([k]) => k.startsWith('notifications/')).map(([, v]) => v.read);
+  result.oppStatuses = Object.entries(store).filter(([k]) => k.startsWith('opportunities/')).map(([, v]) => v.status);
   result.activity = Object.entries(store).filter(([k]) => k.startsWith('activity/')).map(([, v]) => v.type);
-  result.downloads = await page.evaluate(() => window.__saved);
-  fs.writeFileSync(path.join(outDir, 'sent-cv.pdf'), Buffer.from(send.input.attachments[0].content, 'base64'));
-  fs.writeFileSync(path.join(outDir, 'sent-letter.pdf'), Buffer.from(send.input.attachments[1].content, 'base64'));
-  for (const [r, n] of [['library', 'd7-library'], ['activity', 'd8-activity'], ['profile', 'd9-profile'], ['setup', 'd10-setup']]) { await page.goto(`https://stage.test/#${r}`); await page.waitForTimeout(250); await shot(page, n); }
+  for (const [r, n] of [['applications', 'd6-applications'], ['activity', 'd7-activity'], ['profile', 'd8-profile']]) { await page.goto(`https://stage.test/#${r}`); await page.waitForTimeout(250); await shot(page, n); }
 }
 {
   const { page } = await setup({ width: 390, height: 844 });
-  for (const [r, n, sel] of [['overview', 'm1-overview', '.stats'], ['discover', 'm2-discover', '.opp']]) {
-    await page.goto(`https://stage.test/#${r}`); await page.waitForSelector(sel); await page.waitForTimeout(200); await shot(page, n);
-    if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) errors.push(`mobile overflow on ${r}`);
-  }
-  await page.click('[data-act=decide][data-v=interested]');
-  await page.waitForSelector('form[data-form=cv]', { timeout: 15000 });
-  await page.click('[data-act=atab][data-v=send]'); await page.click('[data-act=approve]'); await page.waitForSelector('#confirm-send');
-  await shot(page, 'm3-final');
-  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) errors.push('mobile overflow on final approval');
+  await page.goto('https://stage.test/#home'); await page.waitForSelector('.disc'); await page.waitForTimeout(200); await shot(page, 'm1-home');
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) errors.push('mobile overflow on home');
+  await page.click('#disc-opp1 [data-v=interested]');
+  await page.waitForSelector('#confirm-send', { timeout: 15000 }); await shot(page, 'm2-review');
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) errors.push('mobile overflow on review');
+  await page.goto('https://stage.test/#agent'); await page.waitForTimeout(300); await shot(page, 'm3-agent');
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) errors.push('mobile overflow on agent');
 }
 console.log(JSON.stringify({ result, errors }, null, 1));
 await browser.close();

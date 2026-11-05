@@ -45,12 +45,13 @@ const C = {}; // capabilities
 const S = {
   ready: false, timedOut: false, noRuntime: false,
   profile: null, profileDoc: null, handbook: null, library: null,
-  opps: [], apps: [], drafts: [], activity: [], requests: [],
+  opps: [], apps: [], drafts: [], activity: [], requests: [], notifications: [], runs: [],
+  agentStatus: null, agentConfig: null, agentConfigVersion: null, trigger: null, triggerError: null,
   busy: {}, // per-application running work: {appId: 'Writing…'}
-  ui: { discoverTab: 'new', area: '', appTab: {}, actFilter: '', profileTab: 'facts', confirm: null, replies: {}, preview: null },
+  ui: { editing: {}, actFilter: '', profileTab: 'facts', confirm: null, replies: {}, shownHash: {}, showEarlier: false },
   dirty: false,
 };
-const STATUS = { draft: 'Draft', awaiting_approval: 'Awaiting approval', unknown: 'Check Sent folder', sent: 'Sent', follow_up: 'Follow-up needed', interview: 'Interview', rejected: 'Rejected', accepted: 'Accepted', withdrawn: 'Discarded' };
+const STATUS = { preparing: 'Being prepared', ready: 'Waiting for your approval', unknown: 'Check Sent folder', sent: 'Sent', follow_up: 'Follow-up needed', interview: 'Interview', rejected: 'Rejected', accepted: 'Accepted', withdrawn: 'Discarded' };
 const POST_SEND = ['sent', 'follow_up', 'interview', 'rejected', 'accepted'];
 const AREA = { orleans: 'Orléans area', paris: 'Paris area', other: 'Other' };
 const FIT = { strong: 'Strong match', possible: 'Possible match', weak: 'Weak match' };
@@ -90,6 +91,10 @@ function subscribe() {
   db.collection('drafts').onSnapshot((q) => { S.drafts = q.docs.map((d) => ({ id: d.id, ...d.data() })); renderSoon(); }, onErr('drafts'));
   db.collection('activity').orderBy('ts', 'desc').limit(400).onSnapshot((q) => { S.activity = q.docs.map((d) => ({ id: d.id, ...d.data() })); if (!q.metadata.fromCache) done('activity'); renderSoon(); }, onErr('activity'));
   db.collection('requests').onSnapshot((q) => { S.requests = q.docs.map((d) => ({ id: d.id, ...d.data() })); if (!q.metadata.fromCache) done('requests'); renderSoon(); }, onErr('requests'));
+  db.collection('notifications').orderBy('ts', 'desc').limit(300).onSnapshot((q) => { S.notifications = q.docs.map((d) => ({ id: d.id, ...d.data() })); maybeBrowserNotify(); renderSoon(); }, onErr('notifications'));
+  db.doc('agent/status').onSnapshot((s) => { S.agentStatus = s.exists ? s.data() : null; renderSoon(); }, onErr('agent status'));
+  db.doc('agent/config').onSnapshot((s) => { S.agentConfig = s.exists ? s.data() : null; renderSoon(); }, onErr('agent settings'));
+  db.collection('agentRuns').orderBy('startedAt', 'desc').limit(30).onSnapshot((q) => { S.runs = q.docs.map((d) => ({ id: d.id, ...d.data() })); renderSoon(); }, onErr('agent runs'));
 }
 
 // Re-render on data changes, but never under the user's cursor while editing.
@@ -238,7 +243,7 @@ async function generate(appId, { language, instructions } = {}) {
   if (!S.profile) throw new Error('Your profile has not loaded yet.');
   const lang = language || app.language || 'fr';
   const work = { ...app, language: lang };
-  S.busy[appId] = 'Writing the CV and cover letter…'; render();
+  S.busy[appId] = 'Writing your CV and cover letter for this organization…'; render();
   try {
     let draft = sanitizeDraft(await C.sample.json(generationPrompt(work, opp, instructions ? [instructions] : null), { modelTier: 'complex', cache: false }));
     S.busy[appId] = 'Fact-checking against your profile…'; render();
@@ -255,7 +260,7 @@ async function generate(appId, { language, instructions } = {}) {
       regenerated = true;
     }
     const patch = {
-      status: 'draft', language: lang, cv: draft.cv, letter: draft.letter, emailSubject: draft.email.subject, emailBody: draft.email.body,
+      status: 'ready', language: lang, cv: draft.cv, letter: draft.letter, emailSubject: draft.email.subject, emailBody: draft.email.body,
       review: { unsupported: review.unsupported_claims || [], orgClaims: review.organization_claims_not_in_sources || [], style: review.style_remarks || [], local, notes: draft.notes_for_candidate, regenerated, at: nowIso() },
       approvedHash: null, approvedAt: null, profileVersion: S.profileDoc?.version || 1, generationError: null,
     };
@@ -263,10 +268,9 @@ async function generate(appId, { language, instructions } = {}) {
     const n = await saveDraftVersion({ ...app, ...patch, id: appId }, 'ai');
     const flagged = patch.review.unsupported.length + patch.review.orgClaims.length;
     await log('generate', `Wrote CV and cover letter for ${app.orgName} (version ${n}${regenerated ? ', corrected after fact-check' : ''}${flagged ? `, ${flagged} point(s) to review` : ''})`, { app: appId });
-    S.ui.appTab[appId] = 'cv';
   } catch (e) {
     const msg = sampleErrorText(e);
-    await saveApp(appId, { generationError: msg }).catch(() => {});
+    await saveApp(appId, { generationError: msg, status: appById(appId)?.cv ? 'ready' : 'preparing' }).catch(() => {});
     throw new Error(msg);
   } finally { delete S.busy[appId]; render(); }
 }
@@ -411,111 +415,112 @@ async function savePdf(bytes, filename) {
 }
 
 // ---------- application lifecycle ----------
+const PENDING = ['preparing', 'ready', 'unknown'];
+const KIND = { published: 'Published internship', speculative: 'Spontaneous application' };
 function bestContact(opp) {
-  const v = (opp.contacts || []).filter((c) => c.status === 'verified');
+  const v = (opp?.contacts || []).filter((c) => c.status === 'verified');
   return v.find((c) => c.recommended) || v.find((c) => /^(rh|recrutement|jobs|careers|stage)/i.test(c.email)) || v[0] || null;
+}
+async function markNotifRead(pred) {
+  for (const n of S.notifications.filter((x) => !x.read && pred(x))) {
+    try { await C.db.collection('notifications').doc(n.id).update({ read: true, readAt: nowIso() }); } catch (e) { console.warn(e); }
+  }
 }
 async function decide(oppId, decision) {
   const opp = oppById(oppId);
+  if (decision === 'ignore') { await markNotifRead((n) => n.oppId === oppId); toast('Moved to earlier discoveries'); return; }
   await C.db.collection('opportunities').doc(oppId).update({ status: decision, decidedAt: nowIso() });
-  const label = { interested: 'Interested', not_interested: 'Not interested', saved: 'Saved for later', new: 'Moved back to new' }[decision];
-  await log('decision', `${label}: ${opp.name}`, { opp: oppId });
-  if (decision !== 'interested') { toast(label); return; }
+  await markNotifRead((n) => n.oppId === oppId);
+  const label = { interested: 'Interested', not_interested: 'Not interested', saved: 'Saved for later', new: 'Moved back' }[decision];
+  await log('decision', `${label}: ${opp.position ? `${opp.position} · ` : ''}${opp.name}`, { opp: oppId });
+  if (decision !== 'interested') { toast(decision === 'not_interested' ? 'Noted. Your agent will not suggest it again.' : label); return; }
   let app = S.apps.find((a) => a.oppId === oppId && a.status !== 'withdrawn');
   if (!app) {
     const id = uid('app');
     const c = bestContact(opp);
-    const doc = { oppId, orgName: opp.name, website: opp.website, city: opp.city || '', area: opp.area || '', kind: opp.kind, listingUrl: opp.listingUrl || '', position: opp.position || '', status: 'draft', language: 'fr', contact: c ? { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt } : null, cv: null, letter: null, emailSubject: '', emailBody: '', review: null, approvedHash: null, approvedAt: null, events: [], failedAttempts: [], createdAt: nowIso(), updatedAt: nowIso() };
+    const doc = { oppId, orgName: opp.name, website: opp.website, city: opp.city || '', area: opp.area || '', kind: opp.kind, listingUrl: opp.listingUrl || '', position: opp.position || '', status: 'preparing', language: 'fr', contact: c ? { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, verified: true } : null, cv: null, letter: null, emailSubject: '', emailBody: '', review: null, events: [], failedAttempts: [], createdAt: nowIso(), updatedAt: nowIso() };
     await C.db.collection('applications').doc(id).set(doc);
-    await log('decision', `Application opened for ${opp.name}`, { app: id });
+    await log('decision', `Your agent started preparing an application to ${opp.name}`, { app: id });
     app = { id, ...doc };
     S.apps.push(app);
   }
   go(`app-${app.id}`);
-  if (!app.cv && C.sample) generate(app.id).catch((e) => toast(e.message, 'error'));
+  if (!app.cv && C.sample && !S.busy[app.id]) generate(app.id).catch((e) => toast(e.message, 'error'));
 }
 
 async function approvalHash(app) {
   return sha256Hex(stable({ cv: app.cv, letter: app.letter, subject: app.emailSubject, body: app.emailBody, language: app.language, to: app.contact?.email || null }));
 }
+function contactState(app) {
+  if (!app.contact?.email) return 'missing';
+  const opp = oppById(app.oppId);
+  const c = (opp?.contacts || []).find((x) => x.email === app.contact.email);
+  if (c?.status === 'verified') return 'verified';
+  if (app.contact.reviewedByYou) return 'reviewed';
+  return 'unverified';
+}
 function readiness(app) {
   const p = [];
   if (!app.cv || !app.letter) p.push('The CV and cover letter are not written yet.');
-  if (!app.emailSubject?.trim() || !app.emailBody?.trim()) p.push('The email subject and body are required.');
-  if (!app.contact) p.push('No recipient is selected.');
-  else if (!verifiedFor(app)) p.push(`The recipient ${app.contact.email} is not verified.`);
+  if (!app.emailSubject?.trim() || !app.emailBody?.trim()) p.push('The email subject and message are required.');
+  const cs = contactState(app);
+  if (cs === 'missing') p.push('There is no recipient address yet.');
+  if (cs === 'unverified') p.push(`Review the address ${app.contact.email} before sending.`);
   return p;
-}
-function verifiedFor(app) {
-  const opp = oppById(app.oppId);
-  const c = (opp?.contacts || []).find((x) => x.email === app.contact?.email);
-  return Boolean(c && c.status === 'verified');
 }
 async function updateDraft(appId, patch, label) {
   const app = appById(appId);
-  if (!['draft', 'awaiting_approval'].includes(app.status)) throw new Error('This application can no longer be edited.');
+  if (!['ready', 'preparing'].includes(app.status)) throw new Error('This application can no longer be edited.');
   const next = { ...app, ...patch };
   const review = { ...(app.review || {}), local: next.cv && next.letter ? localChecks({ cv: next.cv, letter: next.letter, email: { subject: next.emailSubject, body: next.emailBody } }, next.language) : [] };
-  const wasApproved = app.status === 'awaiting_approval';
-  await saveApp(appId, { ...patch, review, status: 'draft', approvedHash: null, approvedAt: null });
+  await saveApp(appId, { ...patch, review });
   if (patch.cv || patch.letter || 'emailSubject' in patch || 'emailBody' in patch) {
     const n = await saveDraftVersion({ ...next, id: appId }, 'edit');
     await log('edit', `${label} edited for ${app.orgName} (version ${n})`, { app: appId });
   }
-  if (wasApproved) await log('approve', `Approval withdrawn for ${app.orgName} because it was edited`, { app: appId });
   S.dirty = false;
-}
-async function approve(appId) {
-  const app = appById(appId);
-  const pr = readiness(app);
-  if (pr.length) throw new Error(pr.join(' '));
-  await saveApp(appId, { status: 'awaiting_approval', approvedHash: await approvalHash(app), approvedAt: nowIso() });
-  await log('approve', `Documents approved for ${app.orgName}; waiting for your final send approval`, { app: appId });
-  S.ui.appTab[appId] = 'send';
-}
-async function revoke(appId) {
-  const app = appById(appId);
-  await saveApp(appId, { status: 'draft', approvedHash: null, approvedAt: null });
-  await log('approve', `Approval withdrawn for ${app.orgName}`, { app: appId });
+  delete S.ui.shownHash[appId];
 }
 
-const DEFINITELY_NOT_SENT = ['tool_error', 'not_in_manifest', 'needs_reauth', 'server_not_connected', 'selection_required', 'blocked_by_policy', 'approval_required', 'not_granted', 'capability_disabled', 'capability_removed', 'bad_request', 'server_not_found', 'self_only', 'transform_error'];
-function mcpErrorText(e) {
+const DEFINITELY_NOT_SENT = ['tool_error', 'not_in_manifest', 'needs_reauth', 'server_not_connected', 'selection_required', 'blocked_by_policy', 'approval_required', 'not_granted', 'capability_disabled', 'capability_removed', 'bad_request', 'server_not_found', 'self_only', 'transform_error', 'consent_required'];
+function mcpErrorText(e, server = 'Gmail') {
   switch (e?.code) {
-    case 'server_not_connected': return 'Gmail is not connected to your Claude account. Add it in claude.ai Settings → Connectors.';
-    case 'needs_reauth': return 'Your Gmail connection expired. Reconnect Gmail in claude.ai Settings → Connectors.';
-    case 'not_in_manifest': case 'approval_required': case 'not_granted': return 'This page was not allowed to use Gmail. Allow it when asked (or in the page\'s Permissions menu) and try again.';
-    case 'selection_required': return 'You have more than one Gmail connector. Choose which one this page should use when asked.';
-    case 'blocked_by_policy': return 'Your organization blocks this Gmail action.';
-    case 'tool_error': return `Gmail refused the message: ${e.message}`;
-    default: return e?.message || 'Gmail could not be reached.';
+    case 'server_not_connected': return `${server} is not connected to your Claude account. Add it in claude.ai Settings → Connectors.`;
+    case 'needs_reauth': return `Your ${server} connection expired. Reconnect it in claude.ai Settings → Connectors.`;
+    case 'not_in_manifest': case 'approval_required': case 'not_granted': case 'consent_required': return `This page was not allowed to use ${server}. Allow it when asked (or in the page's Permissions menu) and try again.`;
+    case 'selection_required': return `You have more than one ${server} connector. Choose which one this page should use when asked.`;
+    case 'blocked_by_policy': return `Your organization blocks this ${server} action.`;
+    case 'tool_error': return `${server} refused: ${e.message}`;
+    default: return e?.message || `${server} could not be reached.`;
   }
 }
 
-async function send(appId) {
+/** Final approval: sends exactly what was on screen when the box was ticked. */
+async function approveAndSend(appId) {
   const app = appById(appId);
-  if (app.status !== 'awaiting_approval') throw new Error('This application has not been approved for sending.');
+  if (app.status !== 'ready') throw new Error('This application is not waiting for approval.');
   const pr = readiness(app);
   if (pr.length) throw new Error(pr.join(' '));
-  if ((await approvalHash(app)) !== app.approvedHash) throw new Error('The application changed after approval. Review it and approve it again.');
+  const shown = S.ui.shownHash[appId];
+  if (!shown || shown !== (await approvalHash(app))) throw new Error('The application changed since you ticked the box. Read it again and confirm.');
   if (!C.mcp) throw new Error('Gmail cannot be used from this view. Open the page on claude.ai while signed in.');
-  if (!C.assets) throw new Error('The archive (file storage) is not available in this view, so nothing was sent. Open the page on claude.ai as its owner.');
+  if (!C.assets) throw new Error('The archive is not available in this view, so nothing was sent. Open the page on claude.ai as its owner.');
   S.busy[appId] = 'Preparing the PDFs…'; render();
   try {
-    const date = new Date();
-    const [cvBytes, letterBytes] = await Promise.all([renderCvPdf(S.profile, app.cv), renderLetterPdf(S.profile, app, app.letter, date)]);
+    const [cvBytes, letterBytes] = await Promise.all([renderCvPdf(S.profile, app.cv), renderLetterPdf(S.profile, app, app.letter, new Date())]);
     const names = fileNames(app);
     const [cvSha, letterSha] = await Promise.all([sha256Hex(cvBytes), sha256Hex(letterBytes)]);
     S.busy[appId] = 'Archiving the exact files…'; render();
     const cvAsset = await C.assets.upload(new Blob([cvBytes], { type: 'application/pdf' }), { type: 'application/pdf' });
     const letterAsset = await C.assets.upload(new Blob([letterBytes], { type: 'application/pdf' }), { type: 'application/pdf' });
     const attempt = {
-      to: app.contact.email, subject: app.emailSubject, body: app.emailBody, startedAt: nowIso(), from: 'Gmail',
+      to: app.contact.email, toStatus: contactState(app), subject: app.emailSubject, body: app.emailBody, startedAt: nowIso(),
       cv: { assetId: cvAsset.id, sha256: cvSha, filename: names.cv, size: cvBytes.length },
       letter: { assetId: letterAsset.id, sha256: letterSha, filename: names.letter, size: letterBytes.length },
-      profileVersion: S.profileDoc?.version || 1,
+      profileVersion: S.profileDoc?.version || 1, approvedAt: nowIso(),
     };
     await saveApp(appId, { attempt });
+    await log('approve', `You approved the application to ${app.orgName}`, { app: appId });
     S.busy[appId] = 'Sending from your Gmail…'; render();
     let result;
     try {
@@ -534,321 +539,371 @@ async function send(appId) {
       }
       await saveApp(appId, { status: 'unknown', attempt: { ...attempt, error: mcpErrorText(e) } });
       await log('error', `Sending to ${app.orgName}: Gmail did not confirm (${e?.code || 'error'}). Check the Sent folder before trying again.`, { app: appId });
-      throw new Error('Gmail did not confirm whether the email left. Use "Check Gmail Sent folder" before trying again.');
+      throw new Error('Gmail did not confirm whether the email left. Use "Check my Sent folder" before trying again.');
     }
     const pl = result?.payload || {};
     const gmailId = pl.id || pl.message?.id || null;
     if (!gmailId) {
       await saveApp(appId, { status: 'unknown', attempt: { ...attempt, error: 'Gmail returned no message id' } });
-      throw new Error('Gmail answered without a message ID. Use "Check Gmail Sent folder" to confirm.');
+      throw new Error('Gmail answered without a message ID. Use "Check my Sent folder" to confirm.');
     }
     await markSent(appId, { ...attempt, gmailId, threadId: pl.threadId || null, sentAt: nowIso() });
-    toast('Sent from your Gmail');
-  } finally { delete S.busy[appId]; render(); }
+    toast('Sent from your Gmail and archived');
+  } finally { delete S.busy[appId]; delete S.ui.shownHash[appId]; render(); }
 }
 async function markSent(appId, sent) {
   const app = appById(appId);
   await saveApp(appId, { status: 'sent', sent, attempt: null, events: [...(app.events || []), { type: 'status', date: nowIso().slice(0, 10), content: `Sent to ${sent.to} from Gmail (message ${sent.gmailId})` }] });
-  await log('send', `Application sent to ${app.orgName} (${sent.to}) from Gmail; CV and letter archived (SHA-256 ${sent.cv.sha256.slice(0, 10)} / ${sent.letter.sha256.slice(0, 10)})`, { app: appId });
+  await log('send', `Application sent to ${app.orgName} (${sent.to}) from Gmail; exact CV and letter archived`, { app: appId });
 }
+const gmailDay = (iso) => { const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`; };
 async function checkSentFolder(appId) {
   const app = appById(appId); const at = app.attempt;
   if (!at) return;
-  const d = new Date(at.startedAt); const day = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
   let res;
-  try { res = await C.mcp.callTool('Gmail', 'search_threads', { query: `in:sent to:${at.to} after:${day}`, pageSize: 10 }, { cache: false }); } catch (e) { throw new Error(mcpErrorText(e)); }
+  try { res = await C.mcp.callTool('Gmail', 'search_threads', { query: `in:sent to:${at.to} after:${gmailDay(at.startedAt)}`, pageSize: 10 }, { cache: false }); } catch (e) { throw new Error(mcpErrorText(e)); }
   const threads = res?.payload?.threads || [];
   const hit = threads.find((t) => (t.messages || []).some((m) => (m.subject || '').trim() === at.subject.trim()));
   if (hit) {
     const m = hit.messages.find((x) => (x.subject || '').trim() === at.subject.trim());
     await markSent(appId, { ...at, gmailId: m.id, threadId: hit.id, sentAt: m.date || at.startedAt, confirmedVia: 'Sent folder' });
-    toast('Found in your Sent folder: marked as sent');
+    toast('Found in your Sent folder: recorded as sent');
   } else {
-    await saveApp(appId, { status: 'awaiting_approval', attempt: null, failedAttempts: [...(app.failedAttempts || []), { ...at, error: 'Not found in the Sent folder', at: nowIso() }] });
-    await log('error', `Sending to ${app.orgName}: not found in Gmail's Sent folder, so it was not sent. The application is ready to send again.`, { app: appId });
-    toast('Not in your Sent folder: it was not sent. You can send it again.', 'error');
+    await saveApp(appId, { status: 'ready', attempt: null, failedAttempts: [...(app.failedAttempts || []), { ...at, error: 'Not found in the Sent folder', at: nowIso() }] });
+    await log('error', `${app.orgName}: not found in Gmail's Sent folder, so it was not sent. It is waiting for your approval again.`, { app: appId });
+    toast('Not in your Sent folder: it was not sent. You can approve it again.', 'error');
   }
 }
 async function checkReplies(appId) {
   const app = appById(appId); const s = app.sent;
   const domain = s.to.split('@')[1];
-  const d = new Date(s.sentAt); const day = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
   let res;
-  try { res = await C.mcp.callTool('Gmail', 'search_threads', { query: `from:${domain} after:${day}`, pageSize: 20 }, { cache: false }); } catch (e) { throw new Error(mcpErrorText(e)); }
+  try { res = await C.mcp.callTool('Gmail', 'search_threads', { query: `from:${domain} after:${gmailDay(s.sentAt)}`, pageSize: 20 }, { cache: false }); } catch (e) { throw new Error(mcpErrorText(e)); }
   S.ui.replies[appId] = (res?.payload?.threads || []).map((t) => { const ms = t.messages || []; const m = ms.find((x) => String(x.sender || '').toLowerCase().includes(domain)) || ms[0] || {}; return { threadId: t.id, subject: m.subject || '', snippet: m.snippet || '', sender: m.sender || '', date: m.date || '', url: t.viewUrl || m.viewUrl || '' }; });
   await log('archive', `Checked Gmail for replies from ${domain}: ${S.ui.replies[appId].length} found`, { app: appId });
 }
 async function addEvent(appId, ev) {
   const app = appById(appId);
-  const events = [...(app.events || []), ev];
-  const patch = { events };
+  const patch = { events: [...(app.events || []), ev] };
   if (ev.type === 'interview' && ['sent', 'follow_up'].includes(app.status)) patch.status = 'interview';
   await saveApp(appId, patch);
   await log('archive', `${app.orgName}: ${{ response: 'response', follow_up: 'follow-up', interview: 'interview', note: 'note' }[ev.type]} recorded`, { app: appId });
 }
 
+// ---------- the background agent (scheduled Claude Code task) ----------
+const REMOTE = 'Claude Code Remote';
+async function refreshTrigger() {
+  const id = S.agentConfig?.triggerId;
+  if (!C.mcp || !id) return;
+  try { const r = await C.mcp.callTool(REMOTE, 'get_trigger', { trigger_id: id }, { cache: false }); S.trigger = r?.payload?.trigger || r?.payload || null; S.triggerError = null; } catch (e) { S.triggerError = mcpErrorText(e, 'Claude Code'); }
+  renderSoon();
+}
+async function runAgentNow() {
+  const id = S.agentConfig?.triggerId;
+  if (!id) throw new Error('The agent schedule is not set up yet.');
+  if (!C.mcp) throw new Error('This view cannot start the agent.');
+  try { await C.mcp.callTool(REMOTE, 'fire_trigger', { trigger_id: id }); } catch (e) { throw new Error(mcpErrorText(e, 'Claude Code')); }
+  await log('search', 'You asked your agent to run now');
+  toast('Your agent is starting a run. It usually takes 10 to 20 minutes.');
+}
+async function setAgentPaused(paused) {
+  const id = S.agentConfig?.triggerId;
+  if (C.mcp && id) { try { await C.mcp.callTool(REMOTE, 'update_trigger', { trigger_id: id, enabled: !paused }); } catch (e) { throw new Error(mcpErrorText(e, 'Claude Code')); } }
+  await C.db.doc('agent/config').update({ paused, updatedAt: nowIso() });
+  await log('search', paused ? 'You paused your agent' : 'You resumed your agent');
+  refreshTrigger();
+}
+function nextRunText() {
+  const t = S.trigger;
+  const next = t?.next_run_at || t?.nextRunAt || S.agentConfig?.nextRunHint;
+  if (!next) return S.agentConfig?.scheduleLabel || '';
+  const d = new Date(next);
+  if (Number.isNaN(d.getTime())) return S.agentConfig?.scheduleLabel || '';
+  const today = new Date(); const tomorrow = new Date(Date.now() + 864e5);
+  const day = d.toDateString() === today.toDateString() ? 'today' : d.toDateString() === tomorrow.toDateString() ? 'tomorrow' : d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
+  return `Next search ${day} at ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+// ---------- browser notifications (while the page is open in a browser) ----------
+function notifSupport() {
+  try { return typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'; } catch { return 'unsupported'; }
+}
+function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } }
+function maybeBrowserNotify() {
+  const fresh = S.notifications.filter((n) => !n.read);
+  const last = lsGet('stage.lastNotified') || '';
+  const newer = fresh.filter((n) => String(n.ts) > last);
+  if (!newer.length) return;
+  lsSet('stage.lastNotified', newer[0].ts);
+  if (!last || notifSupport() !== 'granted' || document.visibilityState === 'visible') return;
+  const opps = newer.filter((n) => n.type === 'opportunity');
+  const title = opps.length ? `Your agent found ${opps.length} new opportunit${opps.length > 1 ? 'ies' : 'y'}` : newer[0].title;
+  try { new Notification(title, { body: opps.length ? opps.slice(0, 3).map((n) => n.title).join(' · ') : newer[0].body, tag: 'stage-agent' }); } catch { /* blocked by the frame */ }
+}
+async function askBrowserNotifications() {
+  if (notifSupport() === 'unsupported') throw new Error('This browser view does not allow notifications. Your phone notifications from the Claude app still work.');
+  const r = await Notification.requestPermission();
+  toast(r === 'granted' ? 'Browser notifications are on' : 'Browser notifications were not allowed', r === 'granted' ? '' : 'error');
+  render();
+}
+
 // ---------- navigation ----------
 const main = document.getElementById('main');
 const nav = document.getElementById('nav');
-function route() { return (location.hash || '#overview').slice(1) || 'overview'; }
+function route() { return (location.hash || '#home').slice(1) || 'home'; }
 function go(r) { if (location.hash !== `#${r}`) location.hash = r; else render(); }
 window.addEventListener('hashchange', () => { S.dirty = false; S.ui.confirm = null; render(); window.scrollTo(0, 0); });
 
 function renderNav() {
   const r = route();
-  const newCount = S.opps.filter((o) => o.status === 'new').length;
-  const prep = S.apps.filter((a) => ['draft', 'awaiting_approval', 'unknown'].includes(a.status)).length;
-  const openQ = (S.profile?.questions || []).filter((q) => !q.answer?.trim()).length;
-  const items = [['overview', 'Overview'], ['discover', 'Discover', newCount], ['applications', 'Applications', prep], ['library', 'Documents'], ['activity', 'Activity'], ['profile', 'Profile', openQ], ['setup', 'Connections']];
-  nav.innerHTML = items.map(([k, l, n]) => html`<a href="#${k}" class="${r === k || (k === 'applications' && r.startsWith('app-')) ? 'active' : ''}">${l}${n ? html`<span class="count">${n}</span>` : ''}</a>`.s).join('');
+  const unread = S.notifications.filter((n) => !n.read).length;
+  const pending = S.apps.filter((a) => PENDING.includes(a.status)).length;
+  const items = [['home', 'Home', unread], ['applications', 'Applications', pending], ['profile', 'Profile'], ['agent', 'Agent']];
+  nav.innerHTML = items.map(([k, l, n]) => html`<a href="#${k}" class="${r === k || (k === 'applications' && r.startsWith('app-')) || (k === 'home' && (r.startsWith('opp-') || r === 'activity')) ? 'active' : ''}">${l}${n ? html`<span class="count">${n}</span>` : ''}</a>`.s).join('');
 }
 
 function render() {
   renderNav();
   if (S.noRuntime) { main.innerHTML = html`<div class="notice warn">This workspace runs inside claude.ai. Open its link while signed in to your Claude account.</div>`.s; return; }
   if (!C.db && !S.capsResolved) { main.innerHTML = html`<div class="progress"><span class="spinner"></span>Opening your workspace…</div>`.s; return; }
-  if (!C.db) { main.innerHTML = html`<div class="notice warn"><strong>Your workspace data can't be opened in this view.</strong> Open the link on claude.ai while signed in as its owner.</div>`.s; return; }
+  if (!C.db) { main.innerHTML = html`<div class="notice warn"><strong>Your workspace can't be opened in this view.</strong> Open the link on claude.ai while signed in as its owner.</div>`.s; return; }
   if (!S.ready) { main.innerHTML = html`<div class="progress"><span class="spinner"></span>${S.timedOut ? 'Your data is taking longer than usual to load. It will appear here when it arrives.' : 'Loading your workspace…'}</div>`.s; return; }
   if (!S.profile) { main.innerHTML = html`<div class="empty"><div class="serif">Your profile is not set up yet</div>Ask Claude in your chat to load your profile into this workspace.</div>`.s; return; }
   const r = route();
   let v;
   if (r.startsWith('app-')) v = viewApp(r.slice(4));
-  else v = ({ overview: viewOverview, discover: viewDiscover, applications: viewApplications, library: viewLibrary, activity: viewActivity, profile: viewProfile, setup: viewSetup }[r] || viewOverview)();
+  else if (r.startsWith('opp-')) v = viewOpp(r.slice(4));
+  else v = ({ home: viewHome, applications: viewApplications, activity: viewActivity, profile: viewProfile, agent: viewAgent }[r] || viewHome)();
   main.innerHTML = v.s;
 }
 
 // ---------- views ----------
-function viewOverview() {
-  const sentApps = S.apps.filter((a) => a.sent);
-  const responses = S.apps.filter((a) => (a.events || []).some((e) => e.type === 'response')).length;
-  const interviews = S.apps.filter((a) => ['interview', 'accepted'].includes(a.status) || (a.events || []).some((e) => e.type === 'interview')).length;
-  const todo = [];
-  if (!S.handbook) todo.push(['profile', 'Add your university internship handbook', 'Requirements are not checked until it is there']);
-  else if (S.handbook.academicYear && !/2026/.test(S.handbook.academicYear)) todo.push(['profile', `Your handbook is the ${S.handbook.academicYear} edition`, 'Dates may be outdated: ask the internship office for the current one']);
-  const openQ = (S.profile.questions || []).filter((q) => !q.answer?.trim()).length;
-  if (openQ) todo.push(['profile', `${openQ} question${openQ > 1 ? 's' : ''} about your profile`, 'Nothing is guessed until you answer']);
-  const sug = (S.profile.transferable || []).filter((t) => t.status === 'suggested').length;
-  if (sug) todo.push(['profile', `${sug} suggested skill${sug > 1 ? 's' : ''} to confirm or reject`, 'Not used in documents until confirmed']);
-  const nnew = S.opps.filter((o) => o.status === 'new').length;
-  if (nnew) todo.push(['discover', `${nnew} new organization${nnew > 1 ? 's' : ''} to review`, 'Discover']);
-  for (const a of S.apps.filter((x) => ['draft', 'awaiting_approval', 'unknown'].includes(x.status))) todo.push([`app-${a.id}`, a.orgName, a.status === 'awaiting_approval' ? 'Ready: waiting for your final approval' : a.status === 'unknown' ? 'Check whether it was sent' : 'Draft to review']);
-  for (const a of S.apps.filter((x) => x.status === 'sent' && x.sent && Date.now() - new Date(x.sent.sentAt) > 14 * 864e5 && !(x.events || []).some((e) => e.type === 'response' || e.type === 'follow_up'))) todo.push([`app-${a.id}`, `Follow up with ${a.orgName}?`, `Sent ${fmtDate(a.sent.sentAt)}, no response recorded`]);
-  const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  const pending = S.requests.filter((q) => q.status === 'pending');
-  return html`
-  <div class="page-head"><div><div class="eyebrow">${today}</div><h1>Your internship search</h1>
-    <p class="lede">${S.profile.identity.headline}. ${S.profile.internship.duration}, ${S.profile.internship.period}, in Orléans or Paris.</p></div>
-    <a class="btn primary" href="#discover">Review opportunities</a></div>
-  <div class="stats">
-    <div class="stat"><div class="n">${S.opps.length}</div><div class="l">Organizations discovered</div></div>
-    <div class="stat"><div class="n">${S.opps.filter((o) => o.status === 'saved').length}</div><div class="l">Saved for later</div></div>
-    <div class="stat"><div class="n">${sentApps.length}</div><div class="l">Applications sent</div></div>
-    <div class="stat"><div class="n">${responses}</div><div class="l">Responses received</div></div>
-    <div class="stat"><div class="n">${interviews}</div><div class="l">Interviews</div></div>
-  </div>
-  ${Object.keys(S.busy).length ? html`<div class="section stack">${Object.entries(S.busy).map(([id, t]) => html`<a class="progress" href="#app-${id}"><span class="spinner"></span>${appById(id)?.orgName}: ${t}</a>`)}</div>` : ''}
-  ${pending.length ? html`<div class="section notice small">${pending.length} search request${pending.length > 1 ? 's' : ''} waiting for the research agent.</div>` : ''}
-  <div class="section"><h2>Needs your attention</h2><div class="todo section">${todo.length ? todo.map(([h, t, d]) => html`<a href="#${h}"><span>${t}</span><span class="muted small">${d}</span></a>`) : html`<p class="muted">Nothing waiting right now.</p>`}</div></div>
-  <div class="section"><div class="section-head"><h2>Recent activity</h2><a href="#activity" class="small">Full history</a></div>
-    <ul class="list">${S.activity.slice(0, 7).map((a) => html`<li><span class="break">${a.message}</span><span class="meta">${fmtDate(a.ts, true)}</span></li>`)}</ul></div>`;
+function agentLine() {
+  const st = S.agentStatus; const cfg = S.agentConfig;
+  if (!cfg?.triggerId) return { state: 'off', text: 'Your agent is not scheduled yet.', sub: 'Ask Claude in your chat to set up the schedule.' };
+  if (cfg.paused || S.trigger?.enabled === false) return { state: 'paused', text: 'Your agent is paused.', sub: 'It will not search until you resume it.' };
+  if (st?.state === 'running' && Date.now() - new Date(st.startedAt) < 90 * 60e3) return { state: 'running', text: st.message || 'Your agent is searching.', sub: `Started ${fmtDate(st.startedAt, true)}` };
+  if (st?.state === 'blocked') return { state: 'blocked', text: 'Your agent is blocked.', sub: st.message, extra: nextRunText() };
+  return { state: 'idle', text: st?.lastRunAt ? (st.message || 'Your agent finished its last search.') : 'Your agent is scheduled and has not run yet.', sub: [st?.lastRunAt ? `Last search ${fmtDate(st.lastRunAt, true)}` : '', nextRunText()].filter(Boolean).join(' · ') };
 }
-
-const SECTORS = { any: 'Any relevant sector', import_export: 'Import/export and trading', logistics: 'International logistics and transport', industry_export: 'Manufacturers with export activity', cosmetics_food: 'Cosmetics, perfume, food and wine exporters', institutions: 'Chambers of commerce and export support', services: 'International services' };
-
-function oppCard(o) {
-  const app = S.apps.find((a) => a.oppId === o.id && a.status !== 'withdrawn');
+function agentCard() {
+  const a = agentLine();
+  return html`<section class="agent agent-${a.state}" aria-live="polite">
+    <div class="agent-dot" aria-hidden="true"></div>
+    <div class="agent-text"><div class="eyebrow">Your agent</div><div class="agent-main">${a.text}</div><div class="small muted">${a.sub}${a.extra ? ` · ${a.extra}` : ''}</div></div>
+    ${S.agentConfig?.triggerId && C.mcp && a.state !== 'running' && a.state !== 'paused' ? html`<button class="btn small" data-act="run-now">Search now</button>` : ''}
+  </section>`;
+}
+function discoveryCard(o, n) {
   const best = bestContact(o);
-  const pub = o.kind === 'published';
-  return html`<article class="opp">
-    <div class="opp-head"><div><h3>${o.name}</h3><div class="where">${[o.city, AREA[o.area], o.industry].filter(Boolean).join(' · ')}</div></div>
-      <div class="tags">${pub ? html`<span class="tag solid">Published internship</span>` : html`<span class="tag">Spontaneous application</span>`}${o.fit ? html`<span class="tag ai">${FIT[o.fit]}</span>` : ''}</div></div>
-    <div class="opp-body"><div>
-      <dl class="kv"><dt>Organization <span class="tag ai">AI summary of its website</span></dt><dd>${o.description || html`<span class="muted">No description.</span>`}</dd></dl>
-      <dl class="kv"><dt>Potential internship ${pub ? html`<span class="tag verified">From the published offer</span>` : html`<span class="tag ai">AI suggestion</span>`}</dt><dd class="position">${o.position || '—'}</dd></dl>
-      ${(o.responsibilities || []).length ? html`<dl class="kv"><dt>Possible responsibilities <span class="tag ai">AI suggestion</span></dt><dd><ul>${o.responsibilities.map((x) => html`<li>${x}</li>`)}</ul></dd></dl>` : ''}
-      ${(o.matchReasons || []).length ? html`<dl class="kv"><dt>Why it matches your profile <span class="tag ai">AI suggestion</span></dt><dd><ul>${o.matchReasons.map((x) => html`<li>${x}</li>`)}</ul></dd></dl>` : ''}
-    </div><div>
-      <dl class="kv"><dt>Website ${o.websiteCheckedAt ? html`<span class="tag verified">Checked ${fmtDate(o.websiteCheckedAt)}</span>` : ''}</dt><dd class="break"><a href="${o.website}" target="_blank" rel="noopener noreferrer">${hostOf(o.website)}</a></dd></dl>
-      <dl class="kv"><dt>Contact email ${best ? html`<span class="tag verified">Verified</span>` : ''}</dt><dd class="break">${best ? html`<span class="break">${best.email}</span><div class="xs muted">Found on <a href="${best.evidenceUrl}" target="_blank" rel="noopener noreferrer">${best.evidenceUrl}</a></div>` : html`<span class="muted">No verified address yet</span>`}</dd></dl>
-      ${pub ? html`<dl class="kv"><dt>Internship offer <span class="tag verified">Page checked</span></dt><dd class="break"><a href="${o.listingUrl}" target="_blank" rel="noopener noreferrer">${o.listingUrl}</a></dd></dl>` : ''}
-      <dl class="kv"><dt>Sources</dt><dd class="small break">${(o.sources || []).slice(0, 3).map((u) => html`<div><a href="${u}" target="_blank" rel="noopener noreferrer">${hostOf(u)}</a></div>`)}${o.locationEvidence ? html`<div class="xs muted">Location: ${o.locationEvidence}</div>` : ''}</dd></dl>
-      ${(o.concerns || []).length ? html`<dl class="kv"><dt>Points to consider <span class="tag ai">AI suggestion</span></dt><dd><ul class="small">${o.concerns.map((x) => html`<li>${x}</li>`)}</ul></dd></dl>` : ''}
-      ${o.handbookNotes ? html`<dl class="kv"><dt>Handbook check <span class="tag ai">AI suggestion</span></dt><dd class="small">${o.handbookNotes}</dd></dl>` : ''}
-    </div></div>
-    <div class="opp-actions">
-      ${app ? html`<a class="btn primary" href="#app-${app.id}">Open application</a>` : html`<button class="btn primary" data-act="decide" data-id="${o.id}" data-v="interested">Interested</button>`}
-      ${o.status !== 'saved' ? html`<button class="btn" data-act="decide" data-id="${o.id}" data-v="saved">Save for later</button>` : ''}
-      ${o.status !== 'not_interested' ? html`<button class="btn ghost" data-act="decide" data-id="${o.id}" data-v="not_interested">Not interested</button>` : html`<button class="btn ghost" data-act="decide" data-id="${o.id}" data-v="new">Move back to new</button>`}
-      <span class="xs muted">Nobody is contacted at this stage.</span>
-    </div></article>`;
+  return html`<article class="disc" id="disc-${o.id}">
+    <div class="disc-top"><span class="disc-label">${n && !n.read ? 'New opportunity' : 'Opportunity'}</span><span class="tag ${o.kind === 'published' ? 'solid' : ''}">${KIND[o.kind] || KIND.speculative}</span></div>
+    <h3>${o.position || 'Internship'}</h3>
+    <div class="where">${[o.city || AREA[o.area], o.name].filter(Boolean).join(' · ')}</div>
+    ${o.summary || o.description ? html`<p class="disc-sum">${o.summary || o.description}</p>` : ''}
+    ${(o.matchReasons || []).length ? html`<div class="why"><div class="why-h">Why I found this for you</div><ul>${o.matchReasons.slice(0, 4).map((x) => html`<li>${x}</li>`)}</ul></div>` : ''}
+    <div class="disc-facts small muted">${best ? html`Contact verified on their website` : html`No verified contact yet`}${o.kind === 'published' && o.listingUrl ? html` · <a href="${o.listingUrl}" target="_blank" rel="noopener noreferrer">See the offer</a>` : ''} · <a href="#opp-${o.id}">Details</a></div>
+    <div class="disc-actions">
+      <button class="btn ghost" data-act="decide" data-id="${o.id}" data-v="not_interested">Not interested</button>
+      <button class="btn ghost" data-act="decide" data-id="${o.id}" data-v="saved">Save for later</button>
+      <button class="btn primary" data-act="decide" data-id="${o.id}" data-v="interested">I'm interested</button>
+    </div>
+    ${n && !n.read ? html`<button class="dismiss" data-act="decide" data-id="${o.id}" data-v="ignore" aria-label="Ignore for now">Ignore for now</button>` : ''}
+  </article>`;
+}
+function viewHome() {
+  const unread = S.notifications.filter((n) => !n.read);
+  const newOppNotifs = unread.filter((n) => n.type === 'opportunity' && oppById(n.oppId)?.status === 'new');
+  const otherNotifs = unread.filter((n) => n.type !== 'opportunity');
+  const shownOpp = new Set(newOppNotifs.map((n) => n.oppId));
+  const earlier = S.opps.filter((o) => (o.status === 'new' || o.status === 'saved') && !shownOpp.has(o.id)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const pending = S.apps.filter((a) => PENDING.includes(a.status)).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const sent = S.apps.filter((a) => a.sent).sort((a, b) => String(b.sent.sentAt).localeCompare(String(a.sent.sentAt))).slice(0, 3);
+  const n = newOppNotifs.length;
+  const greet = new Date().getHours() < 18 ? 'Bonjour' : 'Bonsoir';
+  return html`
+  <div class="home-head"><div class="eyebrow">${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+    <h1>${greet} ${S.profile.identity.first_name || ''}.</h1>
+    <p class="lede">${n ? html`Your agent found <strong>${n} new opportunit${n > 1 ? 'ies' : 'y'}</strong>.` : pending.some((a) => a.status === 'ready') ? 'An application is waiting for your approval.' : 'Nothing new to decide right now. Your agent keeps searching.'}</p></div>
+  ${agentCard()}
+  ${otherNotifs.length ? html`<div class="section stack">${otherNotifs.map((x) => html`<div class="notif"><div><b>${x.title}</b><div class="small">${x.body}</div></div><div class="row">${x.appId ? html`<a class="btn small" href="#app-${x.appId}">Open</a>` : ''}<button class="btn small ghost" data-act="notif-read" data-v="${x.id}">Dismiss</button></div></div>`)}</div>` : ''}
+  ${n ? html`<div class="section discs">${newOppNotifs.map((x) => discoveryCard(oppById(x.oppId), x))}</div>` : ''}
+  ${pending.length ? html`<section class="section"><h2>Waiting for you</h2><div class="stack section">${pending.map((a) => html`<a class="pending" href="#app-${a.id}"><div><div class="title">${a.orgName}</div><div class="small muted">${a.position || KIND[a.kind]}${a.city ? ` · ${a.city}` : ''}</div></div><span class="pending-state">${S.busy[a.id] ? 'Being prepared…' : a.status === 'ready' ? 'Review and approve' : a.status === 'unknown' ? 'Check whether it was sent' : 'Being prepared'}</span></a>`)}</div></section>` : ''}
+  ${earlier.length ? html`<section class="section"><div class="section-head"><h2>Earlier discoveries</h2><button class="btn small ghost" data-act="toggle-earlier">${S.ui.showEarlier ? 'Hide' : `Show ${earlier.length}`}</button></div>
+    ${S.ui.showEarlier ? html`<div class="discs">${earlier.map((o) => discoveryCard(o, null))}</div>` : ''}</section>` : ''}
+  ${!n && !S.opps.length ? html`<div class="section empty"><div class="serif">No opportunities yet</div>When your agent finds an internship or an organization worth contacting, it appears here and you get a notification.</div>` : ''}
+  <section class="section"><div class="section-head"><h2>What your agent did</h2><a class="small" href="#activity">All activity</a></div>
+    <ul class="list feed">${S.activity.slice(0, 5).map((a) => html`<li><span class="break">${a.message}</span><span class="meta">${fmtDate(a.ts, true)}</span></li>`)}</ul></section>
+  ${sent.length ? html`<section class="section"><div class="section-head"><h2>Sent applications</h2><a class="small" href="#applications">History</a></div>
+    <ul class="list">${sent.map((a) => html`<li><a class="row-link" href="#app-${a.id}"><div class="title">${a.orgName}</div><div class="small muted">${a.position || ''}</div></a><span class="meta">${pill(a.status)}<br>${fmtDate(a.sent.sentAt)}</span></li>`)}</ul></section>` : ''}`;
 }
 
-function viewDiscover() {
-  const tab = S.ui.discoverTab; const area = S.ui.area;
-  const tabs = [['new', 'New'], ['saved', 'Saved for later'], ['interested', 'Interested'], ['not_interested', 'Not interested'], ['all', 'All']];
-  const fitRank = { strong: 0, possible: 1, weak: 2 };
-  const list = S.opps.filter((o) => (tab === 'all' || o.status === tab) && (!area || o.area === area)).sort((a, b) => (fitRank[a.fit] ?? 3) - (fitRank[b.fit] ?? 3) || String(b.createdAt).localeCompare(String(a.createdAt)));
-  const reqs = S.requests.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5);
-  return html`
-  <div class="page-head"><div><div class="eyebrow">Discover</div><h1>Organizations to consider</h1>
-    <p class="lede">The research agent searches the web, then keeps an organization only if its website was really fetched, and an email only if it appears on the organization's own pages. Anything written by the AI is marked as a suggestion.</p></div></div>
-  <form class="panel stack" data-form="request">
-    <h3>Ask for a new search</h3>
-    <div class="grid-2">
-      <div class="field"><label class="lbl" for="rq-area">Area</label><select id="rq-area" name="area"><option value="orleans">Orléans and surroundings</option><option value="paris">Paris and Île-de-France</option></select></div>
-      <div class="field"><label class="lbl" for="rq-sector">Focus</label><select id="rq-sector" name="sector">${Object.entries(SECTORS).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></div>
-      <div class="field"><label class="lbl" for="rq-site">Or an organization you know (website)</label><input id="rq-site" name="website" type="url" placeholder="https://www.example.fr"></div>
-      <div class="field"><label class="lbl" for="rq-note">Note for the agent (optional)</label><input id="rq-note" name="note" type="text" placeholder="e.g. companies exporting to Spain"></div>
+function viewOpp(id) {
+  const o = oppById(id);
+  if (!o) return html`<div class="notice warn">This opportunity was not found. <a href="#home">Back</a></div>`;
+  const app = S.apps.find((a) => a.oppId === o.id && a.status !== 'withdrawn');
+  const pub = o.kind === 'published';
+  return html`<div class="page-head"><div><div class="eyebrow"><a href="#home">Home</a> · ${KIND[o.kind] || KIND.speculative}</div><h1>${o.position || o.name}</h1>
+    <p class="lede">${[o.name, o.city || AREA[o.area], o.industry].filter(Boolean).join(' · ')}</p></div></div>
+  <div class="opp-body">
+    <div>
+      <dl class="kv"><dt>The organization <span class="tag ai">Agent's summary of its website</span></dt><dd>${o.description || '—'}</dd></dl>
+      <dl class="kv"><dt>The internship ${pub ? html`<span class="tag verified">From the published offer</span>` : html`<span class="tag ai">Agent's suggestion</span>`}</dt><dd class="position">${o.position || '—'}</dd></dl>
+      ${(o.responsibilities || []).length ? html`<dl class="kv"><dt>Possible responsibilities <span class="tag ai">Agent's suggestion</span></dt><dd><ul>${o.responsibilities.map((x) => html`<li>${x}</li>`)}</ul></dd></dl>` : ''}
+      ${(o.matchReasons || []).length ? html`<dl class="kv"><dt>Why I found this for you</dt><dd><ul>${o.matchReasons.map((x) => html`<li>${x}</li>`)}</ul></dd></dl>` : ''}
+      ${(o.concerns || []).length ? html`<dl class="kv"><dt>Points to consider</dt><dd><ul>${o.concerns.map((x) => html`<li>${x}</li>`)}</ul></dd></dl>` : ''}
+      ${o.handbookNotes ? html`<dl class="kv"><dt>University rules</dt><dd class="small">${o.handbookNotes}</dd></dl>` : ''}
     </div>
-    <div class="row"><button class="btn primary" type="submit">Add to the agent's list</button><span class="xs muted">The agent runs from your Claude chat; results appear here once verified.</span></div>
-    ${reqs.length ? html`<ul class="list small">${reqs.map((q) => html`<li><span class="break">${q.website ? `Check ${q.website}` : `${AREA[q.area] || q.area} · ${SECTORS[q.sector] || q.sector}`}${q.note ? ` · ${q.note}` : ''}${q.result ? html`<div class="xs muted">${q.result}</div>` : ''}</span><span class="meta">${q.status === 'pending' ? 'Waiting' : q.status === 'done' ? 'Done' : q.status}</span></li>`)}</ul>` : ''}
-  </form>
-  <div class="section">
-    <div class="tabs">${tabs.map(([k, l]) => html`<button data-act="dtab" data-v="${k}" class="${tab === k ? 'active' : ''}">${l}${k !== 'all' ? ` ${S.opps.filter((o) => o.status === k).length || ''}` : ''}</button>`)}</div>
-    <div class="section-head"><div class="chips">${[['', 'Both areas'], ['orleans', 'Orléans'], ['paris', 'Paris']].map(([k, l]) => html`<button class="chip ${area === k ? 'active' : ''}" data-act="area" data-v="${k}">${l}</button>`)}</div>
-      <div class="row xs muted"><span class="tag verified">Verified</span>checked on the website<span class="tag ai">AI suggestion</span>for you to judge</div></div>
-    ${list.length ? html`<div class="opps">${list.map(oppCard)}</div>` : html`<div class="empty"><div class="serif">Nothing here yet</div>${tab === 'new' ? 'Verified organizations will appear here after the research agent runs.' : 'No organizations with this status.'}</div>`}
+    <div>
+      <dl class="kv"><dt>Website ${o.websiteCheckedAt ? html`<span class="tag verified">Opened by your agent ${fmtDate(o.websiteCheckedAt)}</span>` : ''}</dt><dd class="break"><a href="${o.website}" target="_blank" rel="noopener noreferrer">${hostOf(o.website)}</a></dd></dl>
+      ${pub ? html`<dl class="kv"><dt>Published offer ${o.listingSource ? html`<span class="tag">${o.listingSource}</span>` : ''}</dt><dd class="break"><a href="${o.listingUrl}" target="_blank" rel="noopener noreferrer">${o.listingTitle || o.listingUrl}</a></dd></dl>` : ''}
+      <dl class="kv"><dt>Contact</dt><dd>${(o.contacts || []).length ? html`<ul class="small">${o.contacts.map((c) => html`<li class="break">${c.email} ${c.status === 'verified' ? html`<span class="tag verified">Verified</span>` : html`<span class="tag warn">Not verified</span>`}<div class="xs muted">${c.detail || ''}</div></li>`)}</ul>` : html`<span class="muted small">No address found on their website yet.</span>`}</dd></dl>
+      <dl class="kv"><dt>How your agent found it</dt><dd class="small break">${(o.sources || []).slice(0, 4).map((u) => html`<div><a href="${u}" target="_blank" rel="noopener noreferrer">${hostOf(u)}</a></div>`)}${o.locationEvidence ? html`<div class="xs muted">Location: ${o.locationEvidence}</div>` : ''}${o.createdAt ? html`<div class="xs muted">Found ${fmtDate(o.createdAt, true)}</div>` : ''}</dd></dl>
+    </div>
+  </div>
+  <div class="disc-actions section">
+    ${app ? html`<a class="btn primary" href="#app-${app.id}">Open the application</a>` : html`
+      ${o.status !== 'not_interested' ? html`<button class="btn ghost" data-act="decide" data-id="${o.id}" data-v="not_interested">Not interested</button>` : html`<span class="small muted">You marked this as not interested.</span>`}
+      ${o.status !== 'saved' ? html`<button class="btn ghost" data-act="decide" data-id="${o.id}" data-v="saved">Save for later</button>` : ''}
+      <button class="btn primary" data-act="decide" data-id="${o.id}" data-v="interested">I'm interested</button>`}
   </div>`;
 }
 
 function viewApplications() {
-  const groups = [['In preparation', ['draft', 'awaiting_approval', 'unknown']], ['Sent', ['sent', 'follow_up']], ['Interviews', ['interview']], ['Closed', ['accepted', 'rejected']]];
-  const apps = S.apps.filter((a) => a.status !== 'withdrawn').sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  return html`<div class="page-head"><div><div class="eyebrow">Applications</div><h1>Applications</h1><p class="lede">Each application keeps its documents, the exact files sent, and everything that happened afterwards.</p></div></div>
-  ${apps.length ? '' : html`<div class="empty"><div class="serif">No applications yet</div>Choose <em>Interested</em> on an organization in <a href="#discover">Discover</a>.</div>`}
-  ${groups.map(([t, sts]) => { const rows = apps.filter((a) => sts.includes(a.status)); return rows.length ? html`<div class="section"><h2>${t}</h2><ul class="list section">${rows.map((a) => html`<li><a class="row-link" href="#app-${a.id}"><div class="title">${a.orgName}</div><div class="small muted break">${a.position || (a.kind === 'published' ? 'Published internship' : 'Spontaneous application')}${a.city ? ` · ${a.city}` : ''}${a.contact ? ` · ${a.contact.email}` : ''}</div></a><span class="meta">${pill(S.busy[a.id] ? 'draft' : a.status)}<br><span class="xs">${a.sent ? `Sent ${fmtDate(a.sent.sentAt)}` : `Updated ${fmtDate(a.updatedAt)}`}</span></span></li>`)}</ul></div>` : ''; })}`;
+  const pending = S.apps.filter((a) => PENDING.includes(a.status)).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const sent = S.apps.filter((a) => a.sent).sort((a, b) => String(b.sent.sentAt).localeCompare(String(a.sent.sentAt)));
+  const saved = S.opps.filter((o) => o.status === 'saved');
+  return html`<div class="page-head"><div><div class="eyebrow">Applications</div><h1>Applications</h1><p class="lede">What is waiting for you, and a permanent record of everything sent.</p></div></div>
+  <section><h2>Waiting for you</h2>${pending.length ? html`<div class="stack section">${pending.map((a) => html`<a class="pending" href="#app-${a.id}"><div><div class="title">${a.orgName}</div><div class="small muted">${a.position || KIND[a.kind]}</div></div><span class="pending-state">${STATUS[a.status]}</span></a>`)}</div>` : html`<p class="muted section">Nothing to approve.</p>`}</section>
+  <section class="section"><h2>Sent</h2>${sent.length ? html`<div class="archive section">${sent.map((a) => html`<a class="arch-row" href="#app-${a.id}">
+      <div><div class="title">${a.orgName}</div><div class="small muted">${a.position || KIND[a.kind]}</div></div>
+      <div class="small"><div>${fmtDate(a.sent.sentAt)}</div><div class="muted break">${a.sent.to}</div></div>
+      <div class="small">${pill(a.status)}<div class="muted">${(a.events || []).some((e) => e.type === 'response') ? 'Response received' : 'No response yet'}</div></div></a>`)}</div>` : html`<p class="muted section">No application sent yet.</p>`}</section>
+  ${saved.length ? html`<section class="section"><h2>Saved for later</h2><ul class="list section">${saved.map((o) => html`<li><a class="row-link" href="#opp-${o.id}"><div class="title">${o.position || o.name}</div><div class="small muted">${o.name} · ${KIND[o.kind] || ''}</div></a></li>`)}</ul></section>` : ''}
+  <section class="section"><h2>Original files</h2><div class="section">${(S.library?.items || []).map((d) => html`<div class="doc-row"><div class="break"><div>${d.label}</div><div class="xs muted">${d.filename}</div></div><a class="btn small" href="${blobUrl(d)}" target="_blank" rel="noopener">Open</a></div>`)}
+    <div class="doc-row"><div><div>CV from your current profile</div><div class="xs muted">Without tailoring</div></div><button class="btn small" data-act="base-cv">Download PDF</button></div></div></section>`;
 }
 
-// ----- application workspace -----
-function steps(a) {
-  const idx = POST_SEND.includes(a.status) ? 4 : a.status === 'awaiting_approval' || a.status === 'unknown' ? 2 : a.cv ? 1 : 0;
-  return html`<div class="steps">${['Documents written', 'Reviewed & approved', 'Final approval & send', 'Archived'].map((l, i) => html`<div class="step ${i < idx ? 'done' : i === idx ? 'current' : ''}"><span class="num">${i < idx ? '✓' : i + 1}</span>${l}</div>`)}</div>`;
-}
-function reviewPanel(a) {
+function reviewNotes(a) {
   const r = a.review;
-  if (!r) return html`<div class="notice warn small">These documents were not fact-checked automatically. Read them carefully before approving.</div>`;
-  return html`<div class="stack">
-    ${(r.unsupported || []).length ? html`<div class="notice danger"><strong>Statements the fact-check could not match to your profile</strong><ul>${r.unsupported.map((c) => html`<li><span class="quote">${c.excerpt}</span>${c.problem} <span class="tag">${c.severity}</span></li>`)}</ul></div>` : html`<div class="notice small">Fact-check: every statement about you matched your profile.${r.regenerated ? ' A first draft was corrected automatically.' : ''}</div>`}
-    ${(r.orgClaims || []).length ? html`<div class="notice warn"><strong>About the organization, not found in its pages</strong><ul>${r.orgClaims.map((c) => html`<li>${c}</li>`)}</ul></div>` : ''}
-    ${(r.local || []).length ? html`<div class="notice warn"><strong>Style and consistency</strong><ul>${r.local.map((c) => html`<li>${c}</li>`)}</ul></div>` : ''}
-    ${(r.style || []).length ? html`<div class="notice warn"><strong>Style remarks</strong><ul>${r.style.map((c) => html`<li>${c}</li>`)}</ul></div>` : ''}
-    ${(r.notes || []).length ? html`<div class="notice"><strong>Questions for you</strong> (answer them in your profile to improve the next version)<ul>${r.notes.map((c) => html`<li>${c}</li>`)}</ul></div>` : ''}
-  </div>`;
+  if (!r) return html`<div class="notice warn small">This version was not fact-checked automatically. Read it carefully.</div>`;
+  const items = [
+    ...(r.unsupported || []).map((c) => html`<li><span class="quote">${c.excerpt}</span>${c.problem}</li>`),
+    ...(r.orgClaims || []).map((c) => html`<li>About the organization, not found on its pages: ${c}</li>`),
+    ...(r.local || []).map((c) => html`<li>${c}</li>`),
+    ...(r.style || []).map((c) => html`<li>${c}</li>`),
+  ];
+  return html`${items.length ? html`<div class="notice warn"><strong>Points to look at before approving</strong><ul>${items}</ul></div>` : html`<div class="notice small">Checked against your profile: every statement about you matches it.${r.regenerated ? ' A first draft was corrected automatically.' : ''}</div>`}
+    ${(r.notes || []).length ? html`<div class="notice small"><strong>Questions from your agent</strong> (answer them in your profile to improve the next version)<ul>${r.notes.map((c) => html`<li>${c}</li>`)}</ul></div>` : ''}`;
 }
-function cvEditor(a, editable) {
+function recipientBlock(a) {
+  const cs = contactState(a); const opp = oppById(a.oppId);
+  const others = (opp?.contacts || []).filter((c) => c.email !== a.contact?.email);
+  if (cs === 'verified') return html`<div class="rcpt"><div><div class="eyebrow">To</div><div class="break"><b>${a.contact.email}</b> <span class="tag verified">Verified</span></div><div class="xs muted break">${a.contact.detail || ''}</div></div>${others.length ? html`<button class="btn small ghost" data-act="edit" data-v="recipient">Change</button>` : ''}</div>`;
+  if (cs === 'reviewed') return html`<div class="rcpt"><div><div class="eyebrow">To</div><div class="break"><b>${a.contact.email}</b> <span class="tag warn">Confirmed by you</span></div><div class="xs muted">Your agent could not verify this address on the organization's website; you confirmed it on ${fmtDate(a.contact.reviewedAt)}.</div></div><button class="btn small ghost" data-act="edit" data-v="recipient">Change</button></div>`;
+  return html`<div class="rcpt needs"><div class="stack"><div class="eyebrow">To</div>
+    <div><b>${cs === 'missing' ? 'Your agent could not find a verified address for this organization.' : `Please review ${a.contact.email}: it could not be verified on their website.`}</b></div>
+    <form data-form="recipient" class="stack">
+      <div class="field"><label class="lbl" for="rc-email">Address to send to</label><input id="rc-email" name="email" type="email" value="${a.contact?.email || ''}" required placeholder="recrutement@organization.fr"></div>
+      <div class="field"><label class="lbl" for="rc-src">Where you found it (optional)</label><input id="rc-src" name="source" type="text" placeholder="e.g. the Contact page of their website"></div>
+      <label class="check"><input type="checkbox" name="confirm" required><span>I checked this address myself and want to use it.</span></label>
+      <div class="row"><button class="btn small primary" type="submit">Use this address</button><button class="btn small ghost" type="button" data-act="ask-verify">Ask my agent to verify it instead</button></div>
+    </form></div></div>`;
+}
+function cvEditor(a) {
   const p = S.profile; const cv = a.cv;
   const ord = cv.experience_order || [];
   const order = [...ord.filter((id) => p.experiences.some((e) => e.id === id)), ...p.experiences.map((e) => e.id).filter((id) => !ord.includes(id))];
   const sel = Object.fromEntries((cv.experiences || []).map((e) => [e.id, e]));
-  const dis = editable ? '' : 'disabled';
-  return html`<form data-form="cv" class="stack">
-    <div class="notice small">Facts (experiences, dates, languages, skills) always come from your <a href="#profile">profile</a>. Here you choose what to emphasise for this organization.</div>
-    <div class="field"><label class="lbl" for="cv-head">Headline</label><input id="cv-head" name="headline" type="text" value="${cv.headline || ''}" ${dis} data-dirty></div>
-    <div class="field"><label class="lbl" for="cv-prof">Profile paragraph</label><textarea id="cv-prof" name="profile" class="tall serif" ${dis} data-dirty>${cv.profile || ''}</textarea></div>
-    <div class="field"><span class="lbl">Experiences (order and content)</span><div id="exps" class="stack">${order.map((id) => {
+  return html`<form data-form="cv" class="stack editor">
+    <p class="small muted">Facts come from your <a href="#profile">profile</a>. Here you choose what to show for this organization.</p>
+    <div class="field"><label class="lbl" for="cv-head">Headline</label><input id="cv-head" name="headline" type="text" value="${cv.headline || ''}" data-dirty></div>
+    <div class="field"><label class="lbl" for="cv-prof">Profile paragraph</label><textarea id="cv-prof" name="profile" class="tall serif" data-dirty>${cv.profile || ''}</textarea></div>
+    <div class="field"><span class="lbl">Experiences</span><div id="exps" class="stack">${order.map((id) => {
       const e = p.experiences.find((x) => x.id === id); const s = sel[id];
       const inc = s ? s.include !== false : true; const idx = s?.bullet_indices?.length ? s.bullet_indices : e.bullets.map((_, i) => i);
-      return html`<div class="exp ${inc ? '' : 'off'}" data-exp="${id}"><div class="exp-head"><label class="check"><input type="checkbox" name="inc_${id}" ${inc ? 'checked' : ''} ${dis} data-dirty data-act-change="toggle-exp"><span><b>${e.title}</b><div class="xs muted">${e.organization}${e.dates ? ` · ${e.dates}` : ''}</div></span></label>
-        ${editable ? html`<div class="order"><button type="button" data-act="up" aria-label="Move up">↑</button><button type="button" data-act="down" aria-label="Move down">↓</button></div>` : ''}</div>
-        <div class="bullets">${e.bullets.map((b, i) => html`<label class="check small"><input type="checkbox" name="b_${id}_${i}" ${idx.includes(i) ? 'checked' : ''} ${dis} data-dirty><span>${b}</span></label>`)}</div></div>`;
+      return html`<div class="exp ${inc ? '' : 'off'}" data-exp="${id}"><div class="exp-head"><label class="check"><input type="checkbox" name="inc_${id}" ${inc ? 'checked' : ''} data-dirty data-act-change="toggle-exp"><span><b>${e.title}</b><div class="xs muted">${e.organization}</div></span></label>
+        <div class="order"><button type="button" data-act="up" aria-label="Move up">↑</button><button type="button" data-act="down" aria-label="Move down">↓</button></div></div>
+        <div class="bullets">${e.bullets.map((b, i) => html`<label class="check small"><input type="checkbox" name="b_${id}_${i}" ${idx.includes(i) ? 'checked' : ''} data-dirty><span>${b}</span></label>`)}</div></div>`;
     })}</div></div>
-    <div class="field"><span class="lbl">Courses to highlight</span><div class="stack">${p.education.flatMap((e) => e.courses || []).map((c) => html`<label class="check"><input type="checkbox" name="course" value="${c}" ${(cv.course_highlights || []).includes(c) ? 'checked' : ''} ${dis} data-dirty><span>${c}</span></label>`)}</div></div>
-    ${editable ? html`<div class="row"><button class="btn primary" type="submit">Save CV</button><button type="button" class="btn ghost" data-act="pdf" data-v="cv">Download PDF</button></div>` : ''}
+    <div class="field"><span class="lbl">Courses to highlight</span><div class="stack">${p.education.flatMap((e) => e.courses || []).map((c) => html`<label class="check"><input type="checkbox" name="course" value="${c}" ${(cv.course_highlights || []).includes(c) ? 'checked' : ''} data-dirty><span>${c}</span></label>`)}</div></div>
+    <div class="row"><button class="btn primary" type="submit">Save</button><button type="button" class="btn ghost" data-act="edit" data-v="">Cancel</button></div>
   </form>`;
 }
-function letterEditor(a, editable) {
-  const l = a.letter; const dis = editable ? '' : 'disabled';
-  return html`<form data-form="letter" class="stack">
-    <div class="field"><label class="lbl" for="lt-subj">Subject line (Objet)</label><input id="lt-subj" name="subject_line" type="text" value="${l.subject_line}" ${dis} data-dirty></div>
-    <div class="field"><label class="lbl" for="lt-rec">Department line under the organization name (optional)</label><input id="lt-rec" name="recipient_line" type="text" value="${l.recipient_line || ''}" ${dis} data-dirty></div>
-    <div class="field"><label class="lbl" for="lt-sal">Salutation</label><input id="lt-sal" name="salutation" type="text" value="${l.salutation}" ${dis} data-dirty></div>
-    <div class="field"><span class="lbl">Paragraphs</span><div id="paras" class="stack">${l.paragraphs.map((x, i) => html`<div class="row"><textarea id="lt-p${i}" name="paragraph" class="tall serif" ${dis} data-dirty>${x}</textarea>${editable ? html`<button type="button" class="btn small ghost" data-act="rm-para" aria-label="Remove paragraph">Remove</button>` : ''}</div>`)}</div>
-      ${editable ? html`<div><button type="button" class="btn small ghost" data-act="add-para">+ Add a paragraph</button></div>` : ''}</div>
-    <div class="field"><label class="lbl" for="lt-close">Closing</label><textarea id="lt-close" name="closing" class="serif" ${dis} data-dirty>${l.closing}</textarea></div>
-    <p class="xs muted">${words(l.paragraphs.join(' '))} words in the body.</p>
-    ${editable ? html`<div class="row"><button class="btn primary" type="submit">Save letter</button><button type="button" class="btn ghost" data-act="pdf" data-v="letter">Download PDF</button></div>` : ''}
+function letterEditor(a) {
+  const l = a.letter;
+  return html`<form data-form="letter" class="stack editor">
+    <div class="field"><label class="lbl" for="lt-subj">Objet</label><input id="lt-subj" name="subject_line" type="text" value="${l.subject_line}" data-dirty></div>
+    <div class="field"><label class="lbl" for="lt-rec">Department line (optional)</label><input id="lt-rec" name="recipient_line" type="text" value="${l.recipient_line || ''}" data-dirty></div>
+    <div class="field"><label class="lbl" for="lt-sal">Salutation</label><input id="lt-sal" name="salutation" type="text" value="${l.salutation}" data-dirty></div>
+    <div class="field"><span class="lbl">Paragraphs</span><div id="paras" class="stack">${l.paragraphs.map((x, i) => html`<div class="row"><textarea id="lt-p${i}" name="paragraph" class="tall serif" data-dirty>${x}</textarea><button type="button" class="btn small ghost" data-act="rm-para">Remove</button></div>`)}</div>
+      <div><button type="button" class="btn small ghost" data-act="add-para">+ Add a paragraph</button></div></div>
+    <div class="field"><label class="lbl" for="lt-close">Closing</label><textarea id="lt-close" name="closing" class="serif" data-dirty>${l.closing}</textarea></div>
+    <div class="row"><button class="btn primary" type="submit">Save</button><button type="button" class="btn ghost" data-act="edit" data-v="">Cancel</button></div>
   </form>`;
 }
-function emailEditor(a, editable) {
-  const opp = oppById(a.oppId); const dis = editable ? '' : 'disabled';
-  const contacts = opp?.contacts || [];
-  return html`<div class="split"><form data-form="email" class="stack">
-    <div class="field"><label class="lbl" for="em-to">Recipient</label>
-      ${contacts.length ? html`<select id="em-to" name="to" ${dis} data-dirty><option value="">Choose a verified address</option>${contacts.map((c) => html`<option value="${c.email}" ${c.email === a.contact?.email ? 'selected' : ''} ${c.status === 'verified' ? '' : 'disabled'}>${c.email}${c.status === 'verified' ? '' : ' (not verified)'}</option>`)}</select>` : html`<div class="notice warn small">No verified address for this organization yet.</div>`}
-      ${a.contact ? html`<div class="hint break">${verifiedFor(a) ? '✓ ' : ''}${a.contact.detail || ''}</div>` : ''}</div>
-    <div class="field"><label class="lbl" for="em-subj">Email subject</label><input id="em-subj" name="subject" type="text" value="${a.emailSubject || ''}" ${dis} data-dirty></div>
-    <div class="field"><label class="lbl" for="em-body">Email body</label><textarea id="em-body" name="body" class="tall serif" ${dis} data-dirty>${a.emailBody || ''}</textarea></div>
-    <div class="field"><span class="lbl">Attachments</span><div class="small">${fileNames(a).cv} · ${fileNames(a).letter}</div></div>
-    ${editable ? html`<div><button class="btn primary" type="submit">Save email</button></div>` : ''}
-  </form>
-  ${editable ? html`<form class="panel stack" data-form="contact"><h3>Know a better address?</h3>
-    <p class="small muted">Add it with the page of their website where it appears. The research agent checks that page; the address can be used once it is verified.</p>
-    <input name="email" type="email" placeholder="stage@organization.fr" required aria-label="Email address">
-    <input name="evidence" type="url" placeholder="${a.website}" required aria-label="Page showing the address">
-    <div><button class="btn small" type="submit">Ask the agent to verify it</button></div></form>` : html`<div></div>`}</div>`;
+function emailEditor(a) {
+  return html`<form data-form="email" class="stack editor">
+    <div class="field"><label class="lbl" for="em-subj">Subject</label><input id="em-subj" name="subject" type="text" value="${a.emailSubject || ''}" data-dirty></div>
+    <div class="field"><label class="lbl" for="em-body">Message</label><textarea id="em-body" name="body" class="tall serif" data-dirty>${a.emailBody || ''}</textarea></div>
+    <div class="row"><button class="btn primary" type="submit">Save</button><button type="button" class="btn ghost" data-act="edit" data-v="">Cancel</button></div>
+  </form>`;
 }
-function sendTab(a) {
-  if (a.status === 'unknown') {
-    return html`<div class="notice warn"><strong>Gmail did not confirm whether this email left.</strong> Before sending again, check your Sent folder: if the email is there, it is recorded as sent; if not, you can send it again.</div>
-      <div class="section row"><button class="btn primary" data-act="check-sent">Check Gmail Sent folder</button></div>`;
-  }
-  if (a.status === 'draft') {
-    return html`<h2>Review before approval</h2><div class="section">${reviewPanel(a)}</div>
-    <div class="section grid-2">
-      <div class="panel stack"><h3>Approve the documents</h3><p class="small muted">Approving locks this version. Any later edit withdraws the approval. Sending still needs a separate final confirmation.</p>
-        <div><button class="btn primary" data-act="approve">Approve CV, letter and email</button></div></div>
-      <form class="panel stack" data-form="regen"><h3>Write a new version</h3>
-        <div class="field"><label class="lbl" for="rg-lang">Letter and email language</label><select id="rg-lang" name="language"><option value="fr" ${a.language === 'fr' ? 'selected' : ''}>French</option><option value="en" ${a.language === 'en' ? 'selected' : ''}>English</option></select></div>
-        <div class="field"><label class="lbl" for="rg-ins">Instructions (optional)</label><textarea id="rg-ins" name="instructions" placeholder="e.g. mention their Spanish-speaking markets; shorter second paragraph"></textarea></div>
-        <div><button class="btn" type="submit" ${C.sample ? '' : 'disabled'}>Regenerate</button></div><div class="hint">The current version stays in Documents.</div></form>
-    </div>`;
-  }
-  const p = S.profile; const names = fileNames(a);
-  const gmailOk = Boolean(C.mcp);
-  return html`<h2>Final approval</h2><p class="lede">This is exactly what will be sent from your Gmail. Nothing leaves until you confirm below.</p>
-  <table class="summary section">
-    <tr><th>Organization</th><td>${a.orgName}<div class="xs"><a href="${a.website}" target="_blank" rel="noopener noreferrer">${a.website}</a></div></td></tr>
-    <tr><th>Recipient</th><td>${a.contact.email} <span class="tag verified">Verified</span><div class="xs muted">${a.contact.detail || ''}</div></td></tr>
-    <tr><th>Position</th><td>${a.position || '—'} <span class="small muted">(${a.kind === 'published' ? 'published offer' : 'spontaneous application'})</span></td></tr>
-    <tr><th>From</th><td>Your Gmail account (through your Claude Gmail connector)</td></tr>
-    <tr><th>Subject</th><td>${a.emailSubject}</td></tr>
-    <tr><th>Message</th><td><div class="email-body">${a.emailBody}</div></td></tr>
-    <tr><th>Attachments</th><td>${names.cv} · ${names.letter}</td></tr>
-  </table>
-  <div class="section grid-2"><div class="stack"><div class="eyebrow">Complete CV</div>${cvPaper(p, a.cv)}</div><div class="stack"><div class="eyebrow">Complete cover letter</div>${letterPaper(p, a, a.letter)}</div></div>
-  <div class="section">${reviewPanel(a)}</div>
-  ${(a.failedAttempts || []).length ? html`<div class="section notice warn small"><strong>Earlier attempts that did not send:</strong><ul>${a.failedAttempts.map((f) => html`<li>${fmtDate(f.at, true)}: ${f.error}</li>`)}</ul></div>` : ''}
-  <div class="section final stack">
-    ${gmailOk ? html`<label class="check"><input type="checkbox" id="confirm-send" data-act-change="confirm"><span>I have read the CV, the cover letter and the email above, and I want this application sent to <strong>${a.contact.email}</strong> now.</span></label>
-      <div class="row"><button class="btn primary" id="send-btn" data-act="send" disabled>Send application</button><button class="btn ghost" data-act="revoke">Withdraw approval and edit</button></div>`
-    : html`<div class="notice warn"><strong>Ready, but it cannot be sent from this view.</strong> Gmail is reached through your Claude connectors; open this page on claude.ai, signed in, with Gmail connected.</div><div><button class="btn ghost" data-act="revoke">Withdraw approval and edit</button></div>`}
-  </div>`;
+function recipientChooser(a) {
+  const opp = oppById(a.oppId);
+  return html`<form data-form="pick-recipient" class="stack editor"><span class="lbl">Choose the recipient</span>
+    ${(opp?.contacts || []).map((c) => html`<label class="check"><input type="radio" name="email" value="${c.email}" ${c.email === a.contact?.email ? 'checked' : ''} ${c.status === 'verified' ? '' : 'disabled'}><span class="break">${c.email} ${c.status === 'verified' ? html`<span class="tag verified">Verified</span>` : html`<span class="tag warn">Not verified</span>`}</span></label>`)}
+    <div class="row"><button class="btn small primary" type="submit">Use this address</button><button type="button" class="btn small ghost" data-act="edit" data-v="">Cancel</button></div></form>`;
 }
-function recordTab(a) {
-  const s = a.sent;
-  const replies = S.ui.replies[a.id];
+function reviewView(a) {
+  const id = a.id; const ed = S.ui.editing[id] || '';
+  const names = fileNames(a);
+  const ready = readiness(a);
+  return html`
+  ${reviewNotes(a)}
+  <section class="section block">${ed === 'recipient' ? recipientChooser(a) : recipientBlock(a)}</section>
+  <section class="section block"><div class="block-head"><h3>Email</h3>${ed !== 'email' ? html`<button class="btn small ghost" data-act="edit" data-v="email">Edit</button>` : ''}</div>
+    ${ed === 'email' ? emailEditor(a) : html`<div class="small muted">Subject</div><div class="email-subj">${a.emailSubject}</div><div class="email-body section-sm">${a.emailBody}</div><div class="xs muted section-sm break">Attached: ${names.cv} · ${names.letter}</div>`}</section>
+  <section class="section block"><div class="block-head"><h3>CV</h3>${ed !== 'cv' ? html`<span class="row"><button class="btn small ghost" data-act="pdf" data-v="cv">PDF</button><button class="btn small ghost" data-act="edit" data-v="cv">Edit</button></span>` : ''}</div>
+    ${ed === 'cv' ? html`<div class="split">${cvEditor(a)}${cvPaper(S.profile, a.cv)}</div>` : cvPaper(S.profile, a.cv)}</section>
+  <section class="section block"><div class="block-head"><h3>Cover letter</h3>${ed !== 'letter' ? html`<span class="row"><button class="btn small ghost" data-act="pdf" data-v="letter">PDF</button><button class="btn small ghost" data-act="edit" data-v="letter">Edit</button></span>` : ''}</div>
+    ${ed === 'letter' ? html`<div class="split">${letterEditor(a)}${letterPaper(S.profile, a, a.letter)}</div>` : letterPaper(S.profile, a, a.letter)}</section>
+  <details class="section block"><summary>Ask your agent to rewrite it</summary>
+    <form data-form="regen" class="stack section-sm">
+      <div class="field"><label class="lbl" for="rg-ins">What should change?</label><textarea id="rg-ins" name="instructions" placeholder="e.g. mention their Spanish-speaking customers; make the second paragraph shorter"></textarea></div>
+      <div class="field"><label class="lbl" for="rg-lang">Language of the letter and email</label><select id="rg-lang" name="language"><option value="fr" ${a.language === 'fr' ? 'selected' : ''}>French</option><option value="en" ${a.language === 'en' ? 'selected' : ''}>English</option></select></div>
+      <div><button class="btn" type="submit" ${C.sample ? '' : 'disabled'}>Rewrite</button></div></form></details>
+  ${(a.failedAttempts || []).length ? html`<div class="section notice warn small"><strong>Earlier attempts that were not sent:</strong><ul>${a.failedAttempts.map((f) => html`<li>${fmtDate(f.at, true)}: ${f.error}</li>`)}</ul></div>` : ''}
+  <section class="section final stack">
+    <h3>Approve and send</h3>
+    ${ready.length ? html`<div class="notice warn small">${ready.join(' ')}</div>` : ''}
+    ${!C.mcp ? html`<div class="notice warn small">Gmail can't be used from this view. Open the page on claude.ai with Gmail connected.</div>` : ''}
+    <label class="check"><input type="checkbox" id="confirm-send" data-act-change="confirm" ${ready.length || ed || !C.mcp ? 'disabled' : ''}><span>I have read the email, the CV and the cover letter above. Send this application to <strong>${a.contact?.email || '…'}</strong> from my Gmail.</span></label>
+    <div class="row"><button class="btn primary" id="send-btn" data-act="send" disabled>Approve and send</button><span class="xs muted">The exact PDFs are archived before sending.</span></div>
+  </section>`;
+}
+function recordView(a) {
+  const s = a.sent; const replies = S.ui.replies[a.id];
   const docRow = (d, label) => html`<div class="doc-row"><div class="break"><div>${d.filename}</div><div class="xs muted">${label} · ${(d.size / 1024).toFixed(0)} KB · <span class="mono" title="SHA-256">${d.sha256.slice(0, 16)}…</span></div></div>
-    <div class="row"><a class="btn small" href="${blobUrl(d)}" target="_blank" rel="noopener">Open</a><button class="btn small ghost" data-act="verify-doc" data-v="${blobUrl(d)}" data-sha="${d.sha256}">Check integrity</button></div></div>`;
+    <div class="row"><a class="btn small" href="${blobUrl(d)}" target="_blank" rel="noopener">Open</a><button class="btn small ghost" data-act="dl-asset" data-v="${d.assetId}" data-name="${d.filename}">Download</button><button class="btn small ghost" data-act="verify-doc" data-v="${blobUrl(d)}" data-sha="${d.sha256}">Check it is intact</button></div></div>`;
   return html`<div class="split"><div>
-    <h2>Sent application</h2>
-    <table class="summary section">
-      <tr><th>Sent</th><td>${fmtDate(s.sentAt, true)} from your Gmail${s.confirmedVia ? ` (confirmed via ${s.confirmedVia})` : ''}</td></tr>
-      <tr><th>To</th><td>${s.to}</td></tr>
+    <table class="summary">
+      <tr><th>Sent</th><td>${fmtDate(s.sentAt, true)} from your Gmail${s.confirmedVia ? ` (confirmed in your ${s.confirmedVia})` : ''} <span class="tag verified">Delivered to Gmail</span></td></tr>
+      <tr><th>To</th><td>${s.to}${s.toStatus === 'reviewed' ? html` <span class="tag warn">confirmed by you</span>` : ''}</td></tr>
+      <tr><th>Position</th><td>${a.position || '—'} <span class="small muted">(${KIND[a.kind] || ''})</span></td></tr>
       <tr><th>Organization</th><td>${a.orgName}<div class="xs"><a href="${a.website}" target="_blank" rel="noopener noreferrer">${a.website}</a></div></td></tr>
-      <tr><th>Position</th><td>${a.position || '—'}${a.city ? ` · ${a.city}` : ''}</td></tr>
       <tr><th>Subject</th><td>${s.subject}</td></tr>
       <tr><th>Message</th><td><div class="email-body">${s.body}</div></td></tr>
-      <tr><th>Gmail ID</th><td class="mono">${s.gmailId}</td></tr>
     </table>
     <div class="section"><div class="eyebrow">Exact documents sent</div>${docRow(s.cv, 'CV')}${docRow(s.letter, 'Cover letter')}</div>
   </div><div>
-    <h2>Follow-up</h2>
-    <form class="section row" data-form="status"><select name="status" aria-label="Status">${POST_SEND.map((k) => html`<option value="${k}" ${a.status === k ? 'selected' : ''}>${STATUS[k]}</option>`)}</select><button class="btn small" type="submit">Update status</button></form>
-    <div class="section panel stack"><h3>Replies in Gmail</h3>
-      <div><button class="btn small" data-act="replies" ${C.mcp ? '' : 'disabled'}>Check for replies from ${s.to.split('@')[1]}</button></div>
-      ${replies ? (replies.length ? html`<ul class="list small">${replies.map((t) => html`<li><div class="break"><b>${t.subject || '(no subject)'}</b><div class="muted">${t.sender} · ${t.date ? fmtDate(t.date) : ''}</div><div>${t.snippet}</div>${t.url ? html`<a class="xs" href="${t.url}" target="_blank" rel="noopener noreferrer">Open in Gmail</a>` : ''}</div><button class="btn small" data-act="record-reply" data-v="${t.threadId}">Record as response</button></li>`)}</ul>` : html`<p class="small muted">No email from ${s.to.split('@')[1]} since you sent the application.</p>`) : ''}
+    <div class="panel stack"><h3>Replies</h3>
+      <div><button class="btn small" data-act="replies" ${C.mcp ? '' : 'disabled'}>Look in Gmail for a reply from ${s.to.split('@')[1]}</button></div>
+      ${replies ? (replies.length ? html`<ul class="list small">${replies.map((t) => html`<li><div class="break"><b>${t.subject || '(no subject)'}</b><div class="muted">${t.sender}${t.date ? ` · ${fmtDate(t.date)}` : ''}</div><div>${t.snippet}</div>${t.url ? html`<a class="xs" href="${t.url}" target="_blank" rel="noopener noreferrer">Open in Gmail</a>` : ''}</div><button class="btn small" data-act="record-reply" data-v="${t.threadId}">Record as response</button></li>`)}</ul>` : html`<p class="small muted">No email from ${s.to.split('@')[1]} since you applied.</p>`) : ''}
     </div>
-    <form class="section panel stack" data-form="event"><h3>Record something</h3>
+    <form class="section row" data-form="status"><label class="lbl" for="st-sel">Status</label><select id="st-sel" name="status">${POST_SEND.map((k) => html`<option value="${k}" ${a.status === k ? 'selected' : ''}>${STATUS[k]}</option>`)}</select><button class="btn small" type="submit">Update</button></form>
+    <form class="section panel stack" data-form="event"><h3>Add to the record</h3>
       <div class="grid-2"><div class="field"><label class="lbl" for="ev-type">Type</label><select id="ev-type" name="type"><option value="response">Response received</option><option value="follow_up">Follow-up sent</option><option value="interview">Interview</option><option value="note">Note</option></select></div>
       <div class="field"><label class="lbl" for="ev-date">Date</label><input id="ev-date" type="date" name="date" value="${nowIso().slice(0, 10)}"></div></div>
       <div class="field"><label class="lbl" for="ev-content">Details</label><textarea id="ev-content" name="content" required></textarea></div>
@@ -858,54 +913,34 @@ function recordTab(a) {
 }
 function viewApp(id) {
   const a = appById(id);
-  if (!a) return html`<div class="notice warn">This application was not found. <a href="#applications">Back to applications</a></div>`;
-  const editable = ['draft', 'awaiting_approval'].includes(a.status) && !S.busy[id];
-  const archived = POST_SEND.includes(a.status);
-  const tabs = archived ? [['record', 'Record'], ['versions', 'Draft versions']] : [['cv', 'CV'], ['letter', 'Cover letter'], ['email', 'Email & recipient'], ['send', a.status === 'awaiting_approval' ? 'Final approval' : a.status === 'unknown' ? 'Sending status' : 'Review & approve'], ['versions', 'Versions']];
-  let tab = S.ui.appTab[id] || (archived ? 'record' : ['awaiting_approval', 'unknown'].includes(a.status) ? 'send' : 'cv');
-  if (!tabs.some((t) => t[0] === tab)) tab = tabs[0][0];
+  if (!a) return html`<div class="notice warn">This application was not found. <a href="#applications">Back</a></div>`;
   let body;
-  if (S.busy[id]) body = html`<div class="progress"><span class="spinner"></span>${S.busy[id]} This usually takes one to three minutes. Keep this page open.</div>`;
-  else if (!a.cv && !archived) body = html`${a.generationError ? html`<div class="notice danger"><strong>Writing failed.</strong> ${a.generationError}</div>` : ''}<div class="empty section"><div class="serif">No documents yet</div><p>Claude writes a CV and a cover letter for ${a.orgName}, using only your profile.</p><button class="btn primary" data-act="generate" ${C.sample ? '' : 'disabled'}>Write the documents</button>${C.sample ? '' : html`<p class="xs">Writing with Claude is not available in this view.</p>`}</div>`;
-  else if (tab === 'cv') body = html`<div class="split">${cvEditor(a, editable)}<div class="stack"><div class="eyebrow">Preview</div>${cvPaper(S.profile, a.cv)}</div></div>`;
-  else if (tab === 'letter') body = html`<div class="split">${letterEditor(a, editable)}<div class="stack"><div class="eyebrow">Preview</div>${letterPaper(S.profile, a, a.letter)}</div></div>`;
-  else if (tab === 'email') body = emailEditor(a, editable);
-  else if (tab === 'send') body = sendTab(a);
-  else if (tab === 'record') body = recordTab(a);
-  else if (tab === 'versions') { const vs = S.drafts.filter((d) => d.appId === id).sort((x, y) => y.n - x.n); body = html`<h2>Versions</h2><p class="lede">Every generated and edited version is kept.</p><ul class="list section">${vs.map((v) => html`<li><div>Version ${v.n} <span class="tag ${v.source === 'ai' ? 'ai' : ''}">${v.source === 'ai' ? 'Written by Claude' : 'Your edit'}</span><div class="xs muted">${fmtDate(v.createdAt, true)}</div></div><span class="row"><button class="btn small ghost" data-act="ver-pdf" data-v="${v.id}" data-w="cv">CV PDF</button><button class="btn small ghost" data-act="ver-pdf" data-v="${v.id}" data-w="letter">Letter PDF</button>${editable ? html`<button class="btn small" data-act="restore" data-v="${v.id}">Restore</button>` : ''}</span></li>`)}</ul>`; }
+  if (S.busy[id]) body = html`<div class="progress"><span class="spinner"></span>${S.busy[id]} This usually takes one to three minutes.</div>`;
+  else if (a.status === 'preparing' || !a.cv && !a.sent) body = html`${a.generationError ? html`<div class="notice danger"><strong>Your agent could not finish.</strong> ${a.generationError}</div>` : ''}
+    <div class="empty section"><div class="serif">Your agent is preparing this application</div><p>If you leave this page, it finishes on its next run and notifies you.</p>${C.sample ? html`<button class="btn primary" data-act="generate">Prepare it now</button>` : ''}</div>`;
+  else if (a.status === 'unknown') body = html`<div class="notice warn"><strong>Gmail did not confirm whether this email left.</strong> Before sending again, check your Sent folder.</div><div class="section"><button class="btn primary" data-act="check-sent">Check my Sent folder</button></div>`;
+  else if (a.sent) body = recordView(a);
+  else body = reviewView(a);
+  const vs = S.drafts.filter((d) => d.appId === id).sort((x, y) => y.n - x.n);
   const confirmDiscard = S.ui.confirm === `discard-${id}`;
-  return html`<div class="page-head"><div><div class="eyebrow"><a href="#applications">Applications</a></div><h1>${a.orgName}</h1>
-    <p class="lede break">${[a.position, a.city].filter(Boolean).join(' · ')} · <a href="${a.website}" target="_blank" rel="noopener noreferrer">${hostOf(a.website)}</a></p></div>
-    <div class="row">${pill(S.busy[id] ? 'draft' : a.status)}${['draft', 'awaiting_approval'].includes(a.status) && !confirmDiscard ? html`<button class="btn small ghost danger" data-act="discard">Discard</button>` : ''}</div></div>
-    ${confirmDiscard ? html`<div class="inline-confirm">Discard this unsent application? Its versions stay in Documents.<button class="btn small danger" data-act="discard-yes">Discard</button><button class="btn small ghost" data-act="cancel-confirm">Keep it</button></div>` : ''}
-    ${steps(a)}
-    ${!S.busy[id] && (a.cv || archived) ? html`<div class="tabs">${tabs.map(([k, l]) => html`<button data-act="atab" data-v="${k}" class="${tab === k ? 'active' : ''}">${l}</button>`)}</div>` : ''}
-    ${a.status === 'awaiting_approval' && tab !== 'send' ? html`<div class="notice small">Approved ${fmtDate(a.approvedAt, true)}. Saving an edit withdraws the approval.</div><div class="section"></div>` : ''}
-    ${body}`;
-}
-
-function viewLibrary() {
-  const sent = S.apps.filter((a) => a.sent).sort((a, b) => String(b.sent.sentAt).localeCompare(String(a.sent.sentAt)));
-  const vs = S.drafts.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 80);
-  const orig = S.library?.items || [];
-  return html`<div class="page-head"><div><div class="eyebrow">Documents</div><h1>Document library</h1><p class="lede">Your original files, every document sent (kept exactly as sent), and every draft version.</p></div></div>
-  <div class="section"><h2>Original files</h2><div class="section">${orig.map((d) => html`<div class="doc-row"><div class="break"><div>${d.label}</div><div class="xs muted">${d.filename}</div></div><a class="btn small" href="${blobUrl(d)}" target="_blank" rel="noopener">Open</a></div>`)}
-    <div class="doc-row"><div><div>Base CV from your current profile</div><div class="xs muted">Generated from your profile facts, without tailoring</div></div><button class="btn small" data-act="base-cv">Download PDF</button></div></div></div>
-  <div class="section"><h2>Sent documents</h2><p class="small muted">The exact PDFs attached to each email, with their SHA-256 fingerprint. Editing your profile later never changes them.</p>
-    ${sent.length ? sent.map((a) => html`<div class="section"><div class="section-head"><h3><a href="#app-${a.id}">${a.orgName}</a></h3><span class="small muted">${a.sent.to} · ${fmtDate(a.sent.sentAt)}</span></div>
-      ${[a.sent.cv, a.sent.letter].map((d) => html`<div class="doc-row"><div class="break"><div>${d.filename}</div><div class="xs muted mono">${d.sha256.slice(0, 20)}…</div></div><a class="btn small" href="${blobUrl(d)}" target="_blank" rel="noopener">Open</a></div>`)}</div>`) : html`<div class="empty section">Nothing sent yet.</div>`}</div>
-  <div class="section"><h2>Draft versions</h2>${vs.length ? html`<ul class="list section">${vs.map((v) => html`<li><div><a href="#app-${v.appId}">${v.orgName}</a> · version ${v.n} <span class="tag ${v.source === 'ai' ? 'ai' : ''}">${v.source === 'ai' ? 'Claude' : 'your edit'}</span><div class="xs muted">${fmtDate(v.createdAt, true)}</div></div><span class="row"><button class="btn small ghost" data-act="ver-pdf" data-v="${v.id}" data-w="cv">CV</button><button class="btn small ghost" data-act="ver-pdf" data-v="${v.id}" data-w="letter">Letter</button></span></li>`)}</ul>` : html`<p class="muted">No drafts yet.</p>`}</div>`;
+  return html`<div class="page-head"><div><div class="eyebrow"><a href="#applications">Applications</a> · ${KIND[a.kind] || ''}</div><h1>${a.sent ? '' : 'Your application to '}${a.orgName}</h1>
+    <p class="lede break">${[a.position, a.city].filter(Boolean).join(' · ')}${a.oppId ? html` · <a href="#opp-${a.oppId}">About this opportunity</a>` : ''}</p></div>
+    <div class="row">${pill(S.busy[id] ? 'preparing' : a.status)}${PENDING.includes(a.status) && !confirmDiscard ? html`<button class="btn small ghost danger" data-act="discard">Discard</button>` : ''}</div></div>
+  ${confirmDiscard ? html`<div class="inline-confirm">Discard this unsent application?<button class="btn small danger" data-act="discard-yes">Discard</button><button class="btn small ghost" data-act="cancel-confirm">Keep it</button></div>` : ''}
+  ${body}
+  ${vs.length ? html`<details class="section"><summary>Earlier versions (${vs.length})</summary><ul class="list section-sm">${vs.map((v) => html`<li><div>Version ${v.n} · ${v.source === 'ai' ? 'written by your agent' : 'your edit'}<div class="xs muted">${fmtDate(v.createdAt, true)}</div></div><span class="row"><button class="btn small ghost" data-act="ver-pdf" data-v="${v.id}" data-w="cv">CV</button><button class="btn small ghost" data-act="ver-pdf" data-v="${v.id}" data-w="letter">Letter</button>${a.status === 'ready' ? html`<button class="btn small" data-act="restore" data-v="${v.id}">Restore</button>` : ''}</span></li>`)}</ul></details>` : ''}`;
 }
 
 function viewActivity() {
   const f = S.ui.actFilter;
-  const types = [['', 'All'], ['search', 'Searches'], ['discover', 'Discoveries'], ['decision', 'Decisions'], ['generate', 'Generated'], ['edit', 'Edits'], ['approve', 'Approvals'], ['send', 'Sent'], ['archive', 'Follow-up'], ['profile', 'Profile'], ['error', 'Problems']];
+  const types = [['', 'All'], ['search', 'Searches'], ['discover', 'Discoveries'], ['decision', 'Your decisions'], ['generate', 'Writing'], ['send', 'Sent'], ['error', 'Problems']];
   const items = S.activity.filter((a) => !f || a.type === f);
   const days = new Map();
-  for (const a of items) { const k = new Date(a.ts).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); if (!days.has(k)) days.set(k, []); days.get(k).push(a); }
-  return html`<div class="page-head"><div><div class="eyebrow">Activity</div><h1>What the agent has done</h1><p class="lede">Searches, discoveries, documents written, approvals and emails sent, in order.</p></div></div>
-  <div class="chips">${types.map(([k, l]) => html`<button class="chip ${f === k ? 'active' : ''}" data-act="afilter" data-v="${k}">${l}</button>`)}</div>
-  ${items.length ? [...days.entries()].map(([d, l]) => html`<div class="day"><h3>${d}</h3>${l.map((a) => html`<div class="act"><span class="xs muted">${new Date(a.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span><span class="type ${a.type}">${a.type}</span><span class="msg break">${a.ref?.app ? html`<a href="#app-${a.ref.app}">${a.message}</a>` : a.message}</span></div>`)}</div>`) : html`<div class="empty section">Nothing recorded yet.</div>`}`;
+  for (const a of items) { const k = new Date(a.ts).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }); if (!days.has(k)) days.set(k, []); days.get(k).push(a); }
+  return html`<div class="page-head"><div><div class="eyebrow"><a href="#home">Home</a></div><h1>What your agent did</h1></div></div>
+  ${S.runs.length ? html`<section><h2>Search runs</h2><ul class="list section">${S.runs.slice(0, 10).map((r) => html`<li><div class="break">${r.outcome === 'blocked' ? 'Blocked: could not open websites' : `${r.kept ?? 0} kept from ${r.candidates ?? 0} candidates`}${(r.rejected || []).length ? html`<div class="xs muted">Set aside: ${r.rejected.slice(0, 6).map((x) => `${x.name} (${x.reason})`).join('; ')}</div>` : ''}</div><span class="meta">${fmtDate(r.startedAt, true)}</span></li>`)}</ul></section>` : ''}
+  <div class="chips section">${types.map(([k, l]) => html`<button class="chip ${f === k ? 'active' : ''}" data-act="afilter" data-v="${k}">${l}</button>`)}</div>
+  ${[...days.entries()].map(([d, l]) => html`<div class="day"><h3>${d}</h3>${l.map((a) => html`<div class="act"><span class="xs muted">${new Date(a.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span><span class="type ${a.type}">${a.type}</span><span class="msg break">${a.ref?.app ? html`<a href="#app-${a.ref.app}">${a.message}</a>` : a.ref?.opp ? html`<a href="#opp-${a.ref.opp}">${a.message}</a>` : a.message}</span></div>`)}</div>`)}`;
 }
 
 const PF = {
@@ -920,98 +955,128 @@ function block(list, o) {
 }
 function viewProfile() {
   const p = S.profile; const tab = S.ui.profileTab;
-  const tabs = [['facts', 'Confirmed facts'], ['transferable', 'Transferable skills'], ['questions', 'Open questions'], ['handbook', 'University handbook']];
+  const openQ = (p.questions || []).filter((q) => !q.answer?.trim()).length;
+  const tabs = [['facts', 'About me'], ['transferable', 'Skills to confirm'], ['questions', `Questions${openQ ? ` (${openQ})` : ''}`], ['handbook', 'University rules']];
   let body;
   if (tab === 'facts') body = html`<form data-form="facts" class="stack">
-    <div class="notice small">These facts are the only things the agent may say about you. Documents already sent keep the version they were written from.</div>
+    <div class="notice small">Your agent only ever writes what is here. Applications already sent keep the version they were written from.</div>
     <h2 class="section">Identity</h2><div class="grid-2">${[['full_name', 'Full name'], ['headline', 'Default headline'], ['email', 'Email'], ['phone', 'Phone'], ['city', 'City']].map(([k, l]) => html`<div class="field"><label class="lbl" for="id-${k}">${l}</label><input id="id-${k}" type="text" name="id_${k}" value="${p.identity[k] || ''}" data-dirty></div>`)}</div>
     <h2 class="section">Internship sought</h2><div class="grid-2"><div class="field"><label class="lbl" for="in-dur">Duration</label><input id="in-dur" type="text" name="duration" value="${p.internship.duration}" data-dirty></div><div class="field"><label class="lbl" for="in-per">Period</label><input id="in-per" type="text" name="period" value="${p.internship.period}" data-dirty></div></div>
     <div class="field"><label class="lbl" for="in-prof">Default CV profile paragraph</label><textarea id="in-prof" name="cv_profile_text" class="serif tall" data-dirty>${p.internship.cv_profile_text}</textarea></div>
     ${['languages', 'education', 'experiences', 'skills'].map((l) => html`<h2 class="section">${{ languages: 'Languages', education: 'Education', experiences: 'Experience', skills: 'Skills' }[l]}</h2><div class="stack" id="list-${l}">${p[l].map((o) => block(l, o))}</div><div><button type="button" class="btn small ghost" data-act="add-block" data-v="${l}">+ Add</button></div>`)}
     <h2 class="section">Interests</h2><textarea name="interests" aria-label="Interests" data-dirty>${p.interests || ''}</textarea>
-    <div class="panel section stack"><div class="field"><label class="lbl" for="pf-note">What changed</label><input id="pf-note" name="note" type="text" placeholder="e.g. added TOEIC score"></div><div><button class="btn primary" type="submit">Save profile</button></div></div></form>`;
-  else if (tab === 'transferable') body = html`<p class="lede">Skills that can reasonably be inferred from your experience. They are used <strong>only once you confirm them</strong>.</p>
+    <div class="panel section stack"><div class="field"><label class="lbl" for="pf-note">What changed</label><input id="pf-note" name="note" type="text" placeholder="e.g. added TOEIC score"></div><div><button class="btn primary" type="submit">Save</button></div></div></form>`;
+  else if (tab === 'transferable') body = html`<p class="lede">Skills your agent thinks your experience supports. It uses them <strong>only after you confirm them</strong>.</p>
     <form data-form="transferable" class="section stack">${p.transferable.map((t) => html`<div class="exp" data-tid="${t.id}"><div class="exp-head"><div><div class="serif">${t.text}</div><div class="xs muted">Based on: ${t.basis}</div></div>
-      <select aria-label="Decision" data-dirty>${[['suggested', 'To decide'], ['confirmed', 'Confirmed – use it'], ['rejected', 'Rejected – never use']].map(([k, l]) => html`<option value="${k}" ${t.status === k ? 'selected' : ''}>${l}</option>`)}</select></div></div>`)}
+      <select aria-label="Decision" data-dirty>${[['suggested', 'To decide'], ['confirmed', 'Yes, use it'], ['rejected', 'No, never use it']].map(([k, l]) => html`<option value="${k}" ${t.status === k ? 'selected' : ''}>${l}</option>`)}</select></div></div>`)}
       <div class="panel grid-2"><div class="field"><label class="lbl" for="tr-new">Add a skill in your own words</label><input id="tr-new" name="text" type="text" data-dirty></div><div class="field"><label class="lbl" for="tr-basis">Based on</label><input id="tr-basis" name="basis" type="text" data-dirty></div></div>
       <div><button class="btn primary" type="submit">Save</button></div></form>`;
-  else if (tab === 'questions') body = html`<p class="lede">Information the agent needs and will not guess. Leave a question empty if it does not apply.</p>
+  else if (tab === 'questions') body = html`<p class="lede">Your agent will not guess these. Leave a question empty if it does not apply.</p>
     <form data-form="questions" class="section stack">${p.questions.map((q) => html`<div class="field"><label class="lbl serif" for="q-${q.id}">${q.question}</label><textarea id="q-${q.id}" data-qid="${q.id}" data-dirty>${q.answer || ''}</textarea></div>`)}<div><button class="btn primary" type="submit">Save answers</button></div></form>`;
   else {
     const h = S.handbook;
-    body = h ? html`<div class="section-head"><h2>${h.title || 'Internship handbook'}</h2><span class="small muted">${h.filename}</span></div>
-      ${h.academicYear && !/2026/.test(h.academicYear) ? html`<div class="notice warn">This handbook is the <strong>${h.academicYear}</strong> edition. Its dates (for example the 30 June deadline) were written for that year. Ask the internship office (stages.llsh@univ-orleans.fr) for the 2026–2027 version.</div>` : ''}
-      ${h.assetId ? html`<p class="section"><a class="btn small" href="${blobUrl(h)}" target="_blank" rel="noopener">Open the handbook PDF</a></p>` : ''}
-      <ul class="list section">${(h.requirements || []).map((r) => html`<li><div><span class="tag">${r.topic}</span> ${r.requirement}<div class="quote">“${r.quote}”${r.page ? ` (p. ${r.page})` : ''}</div></div></li>`)}</ul>
-      <p class="xs muted">Each requirement is kept only because its quote was found word for word in the handbook.</p>`
-      : html`<div class="empty">No handbook yet. Ask Claude in your chat to import it.</div>`;
+    body = h ? html`${h.academicYear && !/2026/.test(h.academicYear) ? html`<div class="notice warn">Your handbook is the <strong>${h.academicYear}</strong> edition: its dates were written for that year. Ask the internship office (stages.llsh@univ-orleans.fr) for the 2026–2027 version.</div>` : ''}
+      ${h.assetId ? html`<p class="section"><a class="btn small" href="${blobUrl(h)}" target="_blank" rel="noopener">Open the handbook</a></p>` : ''}
+      <ul class="list section">${(h.requirements || []).map((r) => html`<li><div><span class="tag">${r.topic}</span> ${r.requirement}<div class="quote">“${r.quote}”${r.page ? ` (p. ${r.page})` : ''}</div></div></li>`)}</ul>`
+      : html`<div class="empty">No handbook yet.</div>`;
   }
-  return html`<div class="page-head"><div><div class="eyebrow">Profile · version ${S.profileDoc?.version || 1}</div><h1>Your knowledge base</h1><p class="lede">Everything the agent knows about you: confirmed facts, possible transferable skills, and missing information.</p></div></div>
+  return html`<div class="page-head"><div><div class="eyebrow">Profile · version ${S.profileDoc?.version || 1}</div><h1>What your agent knows about you</h1></div></div>
   <div class="tabs">${tabs.map(([k, l]) => html`<button data-act="ptab" data-v="${k}" class="${tab === k ? 'active' : ''}">${l}</button>`)}</div>${body}`;
 }
 
-function viewSetup() {
-  const pend = S.requests.filter((q) => q.status === 'pending').length;
-  const row = (name, ok, okText, offText) => html`<div class="doc-row"><div><div><b>${name}</b></div><div class="small muted">${ok ? okText : offText}</div></div>${ok ? html`<span class="tag verified">Available</span>` : html`<span class="tag warn">Not available</span>`}</div>`;
-  return html`<div class="page-head"><div><div class="eyebrow">Connections</div><h1>What this workspace uses</h1><p class="lede">Everything runs on your Claude account: no passwords or keys are stored in this page.</p></div></div>
-  <div class="section">
-    ${row('Your private data', Boolean(C.db), 'Profile, opportunities, applications and history are stored with this page, readable only by you.', 'Open the page on claude.ai while signed in.')}
-    ${row('Writing with Claude', Boolean(C.sample), 'CVs, letters and fact-checks are written on your Claude account. The first time, claude.ai asks you to allow it.', 'Not available in this view.')}
-    ${row('Gmail', Boolean(C.mcp), 'Applications are sent from your Gmail through your Claude Gmail connector, only after your final confirmation. Replies can be checked from each sent application.', 'Connect Gmail in claude.ai Settings → Connectors, then reload this page.')}
-    ${row('Archive of sent files', Boolean(C.assets), 'The exact PDFs are stored with this page before each email is sent.', 'Only the page owner can archive files; sending is disabled without it.')}
-    ${row('Saving files', Boolean(C.downloads), 'PDFs can be saved to your device.', 'Not available in this view.')}
-  </div>
-  <div class="section panel stack"><h3>Research agent</h3>
-    <p class="small">Web research and verification run from your Claude chat (Claude Code), which searches the web, fetches each organization's own website and writes only verified results here. ${pend ? `${pend} request${pend > 1 ? 's are' : ' is'} waiting.` : 'No request is waiting.'}</p></div>`;
+function viewAgent() {
+  const cfg = S.agentConfig || {}; const a = agentLine();
+  const np = notifSupport();
+  const row = (name, ok, okText, offText) => html`<div class="doc-row"><div><div><b>${name}</b></div><div class="small muted">${ok ? okText : offText}</div></div>${ok ? html`<span class="tag verified">On</span>` : html`<span class="tag warn">Off</span>`}</div>`;
+  return html`<div class="page-head"><div><div class="eyebrow">Agent &amp; settings</div><h1>Your agent</h1></div></div>
+  ${agentCard()}
+  <section class="section"><h2>How it works</h2>
+    <p class="lede">${cfg.scheduleLabel || 'On a schedule'}, your agent starts on its own in Claude Code. It searches job boards and company career pages in Orléans and Paris, opens each organization's website to verify it and find a real contact address, compares it with your profile, and adds only relevant opportunities here. You get a notification on your phone through the Claude app. It never contacts an organization: you decide, and nothing is sent until you approve.</p>
+    <div class="row section">
+      ${cfg.triggerId && C.mcp ? html`${a.state === 'paused' ? html`<button class="btn primary" data-act="resume">Resume the agent</button>` : html`<button class="btn" data-act="run-now" ${a.state === 'running' ? 'disabled' : ''}>Search now</button><button class="btn ghost" data-act="pause">Pause</button>`}` : ''}
+    </div>
+    ${S.triggerError ? html`<p class="xs muted">Schedule details unavailable: ${S.triggerError}</p>` : ''}
+  </section>
+  <section class="section"><h2>Notifications</h2><div class="section">
+    ${row('Phone (Claude app)', true, 'Each run that finds something ends with a push notification from the Claude app. Turn on Claude notifications on your phone to receive them.', '')}
+    <div class="doc-row"><div><div><b>This browser</b></div><div class="small muted">${np === 'granted' ? 'On: when this page is open in another tab, new discoveries show as a browser notification.' : np === 'denied' ? 'Blocked in this browser. Allow notifications for claude.ai in your browser settings.' : np === 'unsupported' ? 'This view does not allow browser notifications. Phone and email notifications still work.' : 'Shows a notification when new discoveries arrive while this page is open in a tab.'}</div></div>
+      ${np === 'default' ? html`<button class="btn small" data-act="browser-notif">Turn on</button>` : np === 'granted' ? html`<span class="tag verified">On</span>` : html`<span class="tag warn">Off</span>`}</div>
+    <div class="doc-row"><div><div><b>Email summary</b></div><div class="small muted">After a run that finds something, your agent emails a short summary to ${S.profile.identity.email} (only to you).</div></div>
+      <label class="check"><input type="checkbox" data-act-change="notify-email" ${cfg.notifyEmail ? 'checked' : ''}><span>${cfg.notifyEmail ? 'On' : 'Off'}</span></label></div>
+  </div></section>
+  <section class="section"><h2>What it looks for</h2>
+    <form data-form="focus" class="stack section">
+      <div class="field"><span class="lbl">Areas</span><div class="row">${[['orleans', 'Orléans and surroundings'], ['paris', 'Paris and Île-de-France']].map(([k, l]) => html`<label class="check"><input type="checkbox" name="areas" value="${k}" ${(cfg.areas || ['orleans', 'paris']).includes(k) ? 'checked' : ''}><span>${l}</span></label>`)}</div></div>
+      <div class="field"><label class="lbl" for="fc-note">Anything to favour or avoid (optional)</label><input id="fc-note" name="focus" type="text" value="${cfg.focus || ''}" placeholder="e.g. companies exporting to Spain or Latin America"></div>
+      <div><button class="btn small" type="submit">Save</button></div>
+    </form></section>
+  <section class="section"><h2>Connections</h2><div class="section">
+    ${row('Your private data', Boolean(C.db), 'Stored with this page, readable only by you.', 'Open the page on claude.ai while signed in.')}
+    ${row('Writing with Claude', Boolean(C.sample), 'Applications are written on your Claude account when you say you are interested.', 'Not available in this view.')}
+    ${row('Gmail', Boolean(C.mcp), 'Approved applications are sent from your Gmail; replies can be checked from each application.', 'Connect Gmail in claude.ai Settings → Connectors.')}
+    ${row('Archive', Boolean(C.assets), 'The exact PDFs are stored before each email is sent.', 'Only the page owner can archive files.')}
+  </div></section>`;
 }
 
 // ---------- events ----------
 function closestAct(t) { return t.closest('[data-act]'); }
-document.addEventListener('input', (e) => { if (e.target.closest('[data-dirty]') || e.target.matches('[data-dirty]')) S.dirty = true; });
-document.addEventListener('change', (e) => {
+document.addEventListener('input', (e) => { if (e.target.matches('[data-dirty]')) S.dirty = true; });
+document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.matches('[data-dirty]')) S.dirty = true;
-  if (t.dataset.actChange === 'confirm') document.getElementById('send-btn').disabled = !t.checked;
+  if (t.dataset.actChange === 'confirm') {
+    const id = curId(); const btn = document.getElementById('send-btn');
+    if (t.checked) { S.ui.shownHash[id] = await approvalHash(appById(id)); btn.disabled = false; } else { delete S.ui.shownHash[id]; btn.disabled = true; }
+  }
   if (t.dataset.actChange === 'toggle-exp') t.closest('.exp').classList.toggle('off', !t.checked);
+  if (t.dataset.actChange === 'notify-email') guarded(null, async () => { await C.db.doc('agent/config').update({ notifyEmail: t.checked, updatedAt: nowIso() }); toast(t.checked ? 'Email summaries on' : 'Email summaries off'); });
 });
-
 async function guarded(btn, fn) {
   if (btn) btn.disabled = true;
   try { await fn(); } catch (e) { console.error(e); toast(e.message || 'Something went wrong', 'error'); } finally { if (btn?.isConnected) btn.disabled = false; }
 }
-
-const curAppId = () => (route().startsWith('app-') ? route().slice(4) : null);
+const curId = () => { const r = route(); return r.startsWith('app-') || r.startsWith('opp-') ? r.slice(4) : null; };
 
 document.addEventListener('click', (e) => {
   const b = closestAct(e.target);
   if (!b || !main.contains(b)) return;
-  const act = b.dataset.act; const v = b.dataset.v; const id = curAppId();
+  const act = b.dataset.act; const v = b.dataset.v; const id = curId();
   const A = {
-    dtab: () => { S.ui.discoverTab = v; render(); },
-    area: () => { S.ui.area = v; render(); },
+    decide: () => guarded(b, () => decide(b.dataset.id, v)),
+    'notif-read': () => guarded(b, () => markNotifRead((n) => n.id === v)),
+    'toggle-earlier': () => { S.ui.showEarlier = !S.ui.showEarlier; render(); },
+    'run-now': () => guarded(b, runAgentNow),
+    pause: () => guarded(b, () => setAgentPaused(true)),
+    resume: () => guarded(b, () => setAgentPaused(false)),
+    'browser-notif': () => guarded(b, askBrowserNotifications),
     afilter: () => { S.ui.actFilter = v; render(); },
     ptab: () => { if (S.dirty) { toast('Save your changes first, or reload to discard them.', 'error'); return; } S.ui.profileTab = v; render(); },
-    atab: () => { if (S.dirty) { toast('Save your changes first, or reload to discard them.', 'error'); return; } S.ui.appTab[id] = v; render(); },
-    decide: () => guarded(b, () => decide(b.dataset.id, v)),
+    edit: () => { if (S.dirty && !v) S.dirty = false; else if (S.dirty) { toast('Save or cancel the current edit first.', 'error'); return; } S.ui.editing[id] = v || null; delete S.ui.shownHash[id]; render(); },
     generate: () => guarded(b, () => generate(id)),
     up: () => { const n = b.closest('.exp'); if (n.previousElementSibling) n.parentNode.insertBefore(n, n.previousElementSibling); S.dirty = true; },
     down: () => { const n = b.closest('.exp'); if (n.nextElementSibling) n.parentNode.insertBefore(n.nextElementSibling, n); S.dirty = true; },
     'add-para': () => { document.getElementById('paras').insertAdjacentHTML('beforeend', html`<div class="row"><textarea id="lt-p${uid()}" name="paragraph" class="tall serif" data-dirty></textarea><button type="button" class="btn small ghost" data-act="rm-para">Remove</button></div>`.s); S.dirty = true; },
     'rm-para': () => { b.closest('.row').remove(); S.dirty = true; },
-    approve: () => guarded(b, async () => { if (S.dirty) throw new Error('Save your changes first.'); await approve(id); toast('Approved. Read the final summary before sending.'); render(); }),
-    revoke: () => guarded(b, async () => { await revoke(id); S.ui.appTab[id] = 'send'; render(); }),
-    send: () => guarded(b, () => send(id)),
+    send: () => guarded(b, () => approveAndSend(id)),
     'check-sent': () => guarded(b, () => checkSentFolder(id)),
+    'ask-verify': () => guarded(b, async () => {
+      const a = appById(id); const em = String(document.getElementById('rc-email')?.value || '').trim().toLowerCase();
+      if (!em) throw new Error('Enter the address first.');
+      await C.db.collection('requests').doc(uid('rq')).set({ kind: 'verify_email', oppId: a.oppId, website: a.website, email: em, evidenceUrl: a.website, status: 'pending', createdAt: nowIso() });
+      await log('discover', `Asked your agent to verify ${em} for ${a.orgName}`, { app: id });
+      toast('Your agent will check it on its next run.');
+    }),
     discard: () => { S.ui.confirm = `discard-${id}`; render(); },
     'cancel-confirm': () => { S.ui.confirm = null; render(); },
-    'discard-yes': () => guarded(b, async () => { const a = appById(id); await saveApp(id, { status: 'withdrawn', approvedHash: null }); await log('decision', `Unsent application for ${a.orgName} discarded`, { app: id }); S.ui.confirm = null; go('applications'); }),
-    restore: () => guarded(b, async () => { const d = S.drafts.find((x) => x.id === v); await updateDraft(id, { cv: d.cv, letter: d.letter, emailSubject: d.emailSubject, emailBody: d.emailBody }, `Version ${d.n} restored`); S.ui.appTab[id] = 'cv'; toast('Version restored'); render(); }),
+    'discard-yes': () => guarded(b, async () => { const a = appById(id); await saveApp(id, { status: 'withdrawn' }); await log('decision', `Unsent application to ${a.orgName} discarded`, { app: id }); S.ui.confirm = null; go('applications'); }),
+    restore: () => guarded(b, async () => { const d = S.drafts.find((x) => x.id === v); await updateDraft(id, { cv: d.cv, letter: d.letter, emailSubject: d.emailSubject, emailBody: d.emailBody }, `Version ${d.n} restored`); toast('Version restored'); render(); }),
     pdf: () => guarded(b, async () => { const a = appById(id); const n = fileNames(a); if (v === 'cv') await savePdf(await renderCvPdf(S.profile, a.cv), n.cv); else await savePdf(await renderLetterPdf(S.profile, a, a.letter), n.letter); }),
     'ver-pdf': () => guarded(b, async () => { const d = S.drafts.find((x) => x.id === v); const a = appById(d.appId) || { orgName: d.orgName, language: d.language, city: '' }; const n = fileNames(a); if (b.dataset.w === 'cv') await savePdf(await renderCvPdf(S.profile, d.cv), n.cv.replace('.pdf', `_v${d.n}.pdf`)); else await savePdf(await renderLetterPdf(S.profile, { ...a, language: d.language }, d.letter, d.createdAt), n.letter.replace('.pdf', `_v${d.n}.pdf`)); }),
     'base-cv': () => guarded(b, async () => savePdf(await renderCvPdf(S.profile, {}), `CV_${safeName(S.profile.identity.full_name)}.pdf`)),
+    'dl-asset': () => guarded(b, async () => { const r = await fetch(`/_blob/${v}`); if (!r.ok) throw new Error('The archived file could not be read.'); await savePdf(new Uint8Array(await r.arrayBuffer()), b.dataset.name); }),
     replies: () => guarded(b, async () => { await checkReplies(id); render(); }),
     'record-reply': () => guarded(b, async () => { const t = (S.ui.replies[id] || []).find((x) => x.threadId === v); await addEvent(id, { type: 'response', date: (t.date ? new Date(t.date).toISOString() : nowIso()).slice(0, 10), content: `${t.sender}: ${t.subject} – ${t.snippet}`, gmailThread: t.threadId }); toast('Recorded'); render(); }),
-    'verify-doc': () => guarded(b, async () => { const r = await fetch(v); if (!r.ok) throw new Error('The archived file could not be read.'); const h = await sha256Hex(new Uint8Array(await r.arrayBuffer())); toast(h === b.dataset.sha ? 'Intact: identical to the file sent' : 'Warning: the stored file does not match the fingerprint', h === b.dataset.sha ? '' : 'error'); }),
+    'verify-doc': () => guarded(b, async () => { const r = await fetch(v); if (!r.ok) throw new Error('The archived file could not be read.'); const h = await sha256Hex(new Uint8Array(await r.arrayBuffer())); toast(h === b.dataset.sha ? 'Intact: identical to the file sent' : 'Warning: the stored file does not match its fingerprint', h === b.dataset.sha ? '' : 'error'); }),
     'add-block': () => { document.getElementById(`list-${v}`).insertAdjacentHTML('beforeend', block(v, {}).s); S.dirty = true; },
     'rm-block': () => { b.closest('[data-list]').remove(); S.dirty = true; },
   };
@@ -1024,48 +1089,42 @@ async function saveProfile(data, note) {
   await C.db.collection('profileVersions').doc(`v${version}`).set({ data, note, version, createdAt: nowIso() });
   await C.db.doc('profile/current').set({ data, version, note, updatedAt: nowIso() });
   await log('profile', `${note} (profile version ${version})`);
-  S.dirty = false; toast('Saved as a new profile version');
+  S.dirty = false; toast('Saved');
 }
 
 document.addEventListener('submit', (e) => {
   const f = e.target.closest('form[data-form]');
   if (!f) return;
   e.preventDefault();
-  const fd = new FormData(f); const btn = f.querySelector('[type=submit]'); const id = curAppId();
+  const fd = new FormData(f); const btn = f.querySelector('[type=submit]'); const id = curId();
+  const done = (msg) => { S.ui.editing[id] = null; toast(msg); render(); };
   const F = {
-    request: async () => {
-      const site = String(fd.get('website') || '').trim();
-      const doc = site ? { kind: 'check_site', website: site, area: fd.get('area'), note: String(fd.get('note') || ''), status: 'pending', createdAt: nowIso() } : { kind: 'search', area: fd.get('area'), sector: fd.get('sector'), note: String(fd.get('note') || ''), status: 'pending', createdAt: nowIso() };
-      await C.db.collection('requests').doc(uid('rq')).set(doc);
-      await log('search', site ? `Asked the agent to check ${site}` : `Asked the agent to search: ${AREA[doc.area]}, ${SECTORS[doc.sector]}`);
-      f.reset(); toast('Added to the agent\'s list');
-    },
     cv: async () => {
       const a = appById(id);
       const exps = [...f.querySelectorAll('.exp')].map((n) => { const eid = n.dataset.exp; const pe = S.profile.experiences.find((x) => x.id === eid); return { id: eid, include: f.querySelector(`[name="inc_${eid}"]`).checked, bullet_indices: pe.bullets.map((_, i) => i).filter((i) => f.querySelector(`[name="b_${eid}_${i}"]`)?.checked) }; });
       await updateDraft(id, { cv: { ...a.cv, headline: fd.get('headline'), profile: fd.get('profile'), experience_order: exps.map((x) => x.id), experiences: exps, course_highlights: fd.getAll('course') } }, 'CV');
-      toast('CV saved'); render();
+      done('CV saved');
     },
-    letter: async () => {
-      await updateDraft(id, { letter: { subject_line: fd.get('subject_line'), recipient_line: fd.get('recipient_line'), salutation: fd.get('salutation'), paragraphs: fd.getAll('paragraph').map((x) => String(x).trim()).filter(Boolean), closing: fd.get('closing') } }, 'Letter');
-      toast('Letter saved'); render();
+    letter: async () => { await updateDraft(id, { letter: { subject_line: fd.get('subject_line'), recipient_line: fd.get('recipient_line'), salutation: fd.get('salutation'), paragraphs: fd.getAll('paragraph').map((x) => String(x).trim()).filter(Boolean), closing: fd.get('closing') } }, 'Letter'); done('Letter saved'); },
+    email: async () => { await updateDraft(id, { emailSubject: fd.get('subject'), emailBody: fd.get('body') }, 'Email'); done('Email saved'); },
+    'pick-recipient': async () => {
+      const a = appById(id); const c = (oppById(a.oppId)?.contacts || []).find((x) => x.email === fd.get('email'));
+      if (!c) throw new Error('Choose an address.');
+      await updateDraft(id, { contact: { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, verified: true } }, 'Recipient'); done('Recipient changed');
     },
-    email: async () => {
-      const a = appById(id); const opp = oppById(a.oppId);
-      const to = fd.get('to');
-      const c = to ? (opp.contacts || []).find((x) => x.email === to) : null;
-      await updateDraft(id, { emailSubject: fd.get('subject'), emailBody: fd.get('body'), ...(to !== null ? { contact: c ? { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt } : null } : {}) }, 'Email');
-      toast('Email saved'); render();
-    },
-    contact: async () => {
+    recipient: async () => {
+      const em = String(fd.get('email') || '').trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(em)) throw new Error('This does not look like an email address.');
+      if (!fd.get('confirm')) throw new Error('Tick the box to confirm you checked the address.');
       const a = appById(id);
-      await C.db.collection('requests').doc(uid('rq')).set({ kind: 'verify_email', oppId: a.oppId, website: a.website, email: String(fd.get('email')).trim().toLowerCase(), evidenceUrl: String(fd.get('evidence')).trim(), status: 'pending', createdAt: nowIso() });
-      await log('discover', `Asked the agent to verify ${fd.get('email')} for ${a.orgName}`, { app: id });
-      f.reset(); toast('The agent will verify it. It becomes selectable once verified.');
+      await updateDraft(id, { contact: { email: em, reviewedByYou: true, reviewedAt: nowIso(), detail: String(fd.get('source') || '').trim() ? `You found it: ${String(fd.get('source')).trim()}` : 'Confirmed by you' } }, 'Recipient');
+      await log('decision', `You confirmed ${em} as the recipient for ${a.orgName}`, { app: id });
+      done('Address confirmed');
     },
     regen: async () => generate(id, { language: fd.get('language'), instructions: String(fd.get('instructions') || '').trim() || undefined }),
     status: async () => { const a = appById(id); await saveApp(id, { status: fd.get('status'), events: [...(a.events || []), { type: 'status', date: nowIso().slice(0, 10), content: `Status: ${STATUS[fd.get('status')]}` }] }); await log('archive', `${a.orgName}: status changed to ${STATUS[fd.get('status')]}`, { app: id }); toast('Status updated'); render(); },
     event: async () => { await addEvent(id, { type: fd.get('type'), date: fd.get('date') || nowIso().slice(0, 10), content: String(fd.get('content')).trim() }); f.reset(); toast('Saved'); render(); },
+    focus: async () => { await C.db.doc('agent/config').update({ areas: fd.getAll('areas'), focus: String(fd.get('focus') || '').trim(), updatedAt: nowIso() }); await log('search', 'You updated what your agent looks for'); toast('Saved. Your agent uses this from its next run.'); },
     facts: async () => {
       const p = clone(S.profile);
       for (const k of ['full_name', 'headline', 'email', 'phone', 'city']) p.identity[k] = String(fd.get(`id_${k}`) || '').trim();
@@ -1080,7 +1139,7 @@ document.addEventListener('submit', (e) => {
       f.querySelectorAll('[data-tid]').forEach((n) => { p.transferable.find((t) => t.id === n.dataset.tid).status = n.querySelector('select').value; });
       const t = String(fd.get('text') || '').trim();
       if (t) p.transferable.push({ id: uid('t'), text: t, basis: String(fd.get('basis') || '').trim() || 'Stated by you', status: 'confirmed' });
-      await saveProfile(p, 'Transferable skills reviewed'); render();
+      await saveProfile(p, 'Skills reviewed'); render();
     },
     questions: async () => {
       const p = clone(S.profile);
@@ -1102,5 +1161,8 @@ async function boot() {
   if (!C.db) { render(); return; }
   subscribe();
   render();
+  // Read the schedule once the config has arrived (no polling).
+  const wait = setInterval(() => { if (S.agentConfig) { clearInterval(wait); refreshTrigger(); } }, 1000);
+  setTimeout(() => clearInterval(wait), 30000);
 }
 boot();
