@@ -64,6 +64,7 @@ through Anthropic's web search quotes instead of opening sites:
 Skip steps 3–6 in search mode, except `verify_email` requests, which you leave pending.
 
 **If `online` is false and there is no key:**
+- first do step 8 (applications waiting to be prepared): it needs no website access;
 - update `agent/status` to `{state: "blocked", message: "I can't open websites from my environment, so I can't verify organizations. Either set Network access to Full in the Claude Code environment settings, or add your Anthropic API key there as the environment variable ANTHROPIC_API_KEY.", lastCheckAt: <now>, runId}`;
 - write `agentRuns/<runId>` `{startedAt, finishedAt, outcome: "blocked", detail}`;
 - if the previous `agent/status.state` was not already `blocked`, also add one `notifications/<runId>` doc
