@@ -112,7 +112,7 @@ export async function fetchPage(input, { timeoutMs = 15000 } = {}) {
 }
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,24}/gi;
-const IGNORED_EMAIL = /(example\.(com|org|fr)|sentry|wixpress|\.png$|\.jpe?g$|\.gif$|\.webp$|\.svg$|domain\.(com|fr)|email\.com$|votre|yourname|nom\.prenom|prenom\.nom|u003e)/i;
+const IGNORED_EMAIL = /(example\.(com|org|fr)|sentry|wixpress|\.png$|\.jpe?g$|\.gif$|\.webp$|\.svg$|domain\.(com|fr)|email\.com$|votre|yourname|nom\.prenom|prenom\.nom|monadresse|mondomaine|votreadresse|votre-email|adresse@|email@|u003e)/i;
 
 export function deobfuscate(text) {
   return String(text)

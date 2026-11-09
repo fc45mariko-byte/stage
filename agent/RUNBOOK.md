@@ -80,7 +80,28 @@ For each `requests` doc with `status: "pending"`:
   Set `status: "done"` and `result` when finished.
 - `search` (`area`, `sector`, `note`): include it in this run's search plan, then mark it `done`.
 
-### 4. Search (about 10–14 web searches, alternate areas and themes between runs)
+### 4. Search (LinkedIn + about 10–14 web searches, alternate areas and themes between runs)
+
+**4.0 LinkedIn (every run, when websites can be opened):**
+`node scripts/linkedin-jobs.mjs --out linkedin.json --known known.json --max-details 60`
+It reads LinkedIn's public internship offers for Orléans and Paris across many role types (international, export, purchasing,
+supply chain, sales assistant, customer relations, marketing, communication, events, tourism, translation, office/assistant)
+and opens each offer to extract duration, start date and level. Every offer in the file was really fetched from LinkedIn.
+For each offer (skip engineering/IT, work-study and volunteering, which the script already filters):
+- **fits** (≤ 10 weeks, or dates compatible with April–June 2027, and Licence/Bac+2/Bac+3 level): a `published` opportunity
+  with `listingUrl` = the LinkedIn URL, `listingSource: "LinkedIn"`;
+- **does not fit** (6 months, Master, January start) but the team and tasks match her profile: you may create ONE
+  `speculative` opportunity per organization, saying in `summary` and `concerns` which LinkedIn offer revealed the team
+  ("They published a 6-month internship in export flows on LinkedIn; this shows the team takes interns. Ask for 6 weeks in spring.").
+  Never present such an offer as one she can apply to as published.
+Then verify the organization's own website with `verify-org.mjs` as usual (LinkedIn pages are not the organization's site;
+contacts come only from its own site).
+
+Look broadly: besides export and logistics, any role where her languages (English C2, Spanish B2) and business courses
+are useful counts: purchasing, sales administration, customer service / relations with foreign customers, marketing and
+communication in international companies, events and trade fairs, tourism and travel, translation, chambers of commerce,
+international associations.
+
 Update `agent/status.message` as you go, in plain words (e.g. "Searching job boards for import/export internships in Orléans").
 Use `config.areas` (default both) and `config.focus` (if set).
 

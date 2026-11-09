@@ -42,7 +42,12 @@ async function main() {
   for (const p of site.pages) for (const e of p.emails) {
     if (contacts.some((c) => c.email === e)) continue;
     const mx = await checkMx(e);
-    contacts.push({ email: e, evidenceUrl: p.url, status: mx === 'none' ? 'failed' : 'verified', mx, detail: mx === 'none' ? `Found on ${p.url}, but its domain has no mail server` : `Found on ${p.url} (checked ${result.checkedAt.slice(0, 10)})`, checkedAt: result.checkedAt.slice(0, 10) });
+    const sameDomain = baseDomain(e.split('@')[1]) === site.domain;
+    const status = mx === 'none' ? 'failed' : sameDomain ? 'verified' : 'to_review';
+    const detail = mx === 'none' ? `Found on ${p.url}, but its domain has no mail server`
+      : sameDomain ? `Found on ${p.url} (checked ${result.checkedAt.slice(0, 10)})`
+      : `Found on ${p.url}, but it belongs to another domain (${e.split('@')[1]}), possibly a web agency or partner: please confirm`;
+    contacts.push({ email: e, evidenceUrl: p.url, status, mx, detail, checkedAt: result.checkedAt.slice(0, 10) });
   }
   result.contacts = contacts;
   const re = LOCATION[area];
