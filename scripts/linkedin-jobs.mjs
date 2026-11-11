@@ -17,9 +17,9 @@ const maxDetails = Number(opt('--max-details', 60));
 const known = fs.existsSync(opt('--known', '')) ? JSON.parse(fs.readFileSync(opt('--known'), 'utf8')) : { listings: [] };
 const log = (...a) => console.error(new Date().toISOString().slice(11, 19), ...a);
 
-const LOCATIONS = { orleans: 'Orléans, Centre-Val de Loire, France', paris: 'Paris, Île-de-France, France' };
+const LOCATIONS = opt('--locations') ? JSON.parse(opt('--locations')) : { orleans: 'Orléans, Centre-Val de Loire, France', paris: 'Paris, Île-de-France, France' };
 // Broad on purpose: any role where an LEA student's languages and business courses are useful.
-const KEYWORDS = [
+const KEYWORDS = opt('--keywords') ? JSON.parse(opt('--keywords')) : [
   'stage', 'stage anglais', 'stage espagnol', 'stage international', 'stage export', 'stage import export',
   'stage commercial', 'stage assistant commercial', 'stage achats', 'stage supply chain', 'stage logistique',
   'stage administration des ventes', 'stage service client', 'stage relation client', 'stage marketing',
@@ -63,7 +63,9 @@ function analyse(text) {
   const start = t.match(/(?:d[ée]but|start|démarrage|à partir de|d[èe]s)[^.]{0,40}?(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[ée]cembre|january|february|march|april|may|june|july|august|september)\s*(20\d\d)?/i);
   const level = t.match(/(bac\s*\+\s*\d|master|licence|bachelor|L3|M1|M2|école de commerce)/i);
   const languages = [...new Set((t.match(/\b(anglais|espagnol|english|spanish|allemand|italien|bilingue)\b/gi) || []).map((x) => x.toLowerCase()))];
-  return { duration, durationWeeks, startHint: start ? start[0] : '', levelHint: level ? level[0] : '', languages };
+  const pay = t.match(/(\d[\d.,\s]{2,7}\s?(?:€|eur|euros|£|gbp|usd|\$)\s?(?:\/|per|par)?\s?(?:month|mois|mes|week|semaine)?|(?:paid|remunerad[ao]|rémunéré|salary|salario|stipend|beca|gratification)[^.]{0,60})/i);
+  const housing = t.match(/(accommodation|housing|logement|alojamiento|vivienda|relocation)[^.]{0,80}/i);
+  return { duration, durationWeeks, startHint: start ? start[0] : '', levelHint: level ? level[0] : '', languages, payHint: pay ? pay[0].trim() : '', housingHint: housing ? housing[0].trim() : '' };
 }
 
 const seen = new Map();
@@ -77,12 +79,12 @@ for (const [area, location] of Object.entries(LOCATIONS)) {
   }
 }
 const NOT_INTERNSHIP = /(altern|apprenti|apprentissage|b[ée]n[ée]volat|\bCDI\b|\bCDD\b|formation |contrat pro)/i;
-const RELEVANT = /(international|export|import|achat|acheteu|commercial|ADV|administration des ventes|supply|logisti|transport|douane|client|customer|marketing|communication|[ée]v[ée]nement|tourisme|traduct|langue|anglais|espagnol|assistant|office|achats|sourcing|trade|business developer|d[ée]veloppement commercial)/i;
+const RELEVANT = /(french|français|francophone|frances|international|export|import|achat|acheteu|commercial|ADV|administration des ventes|supply|logisti|transport|douane|client|customer|marketing|communication|[ée]v[ée]nement|tourisme|traduct|langue|anglais|espagnol|assistant|office|achats|sourcing|trade|business developer|d[ée]veloppement commercial)/i;
 let offers = [...seen.values()].filter((o) => !EXCLUDE.test(o.title) && !NOT_INTERNSHIP.test(o.title) && !known.listings.includes(o.url));
 log('unique', seen.size, 'after filters', offers.length);
 offers.sort((a, b) => Number(RELEVANT.test(b.title)) - Number(RELEVANT.test(a.title)));
-const per = Math.ceil(maxDetails / 2);
-offers = [...offers.filter((o) => o.area === 'orleans').slice(0, per), ...offers.filter((o) => o.area === 'paris').slice(0, per)];
+const per = Math.ceil(maxDetails / Object.keys(LOCATIONS).length);
+offers = Object.keys(LOCATIONS).flatMap((a) => offers.filter((o) => o.area === a).slice(0, per));
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 for (const o of offers) {
   await pause(1500 + Math.random() * 1500);

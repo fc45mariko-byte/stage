@@ -97,6 +97,13 @@ For each offer (skip engineering/IT, work-study and volunteering, which the scri
 Then verify the organization's own website with `verify-org.mjs` as usual (LinkedIn pages are not the organization's site;
 contacts come only from its own site).
 
+**4.0b Abroad (only if `agent/config.abroad` is true): published, paid offers only.**
+`node scripts/linkedin-jobs.mjs --out abroad.json --known known.json --max-details 60 --locations '{"spain":"Spain","uk":"United Kingdom","ireland":"Ireland","portugal":"Portugal"}' --keywords '["French speaker internship","French internship","prácticas francés","prácticas comercio internacional","export internship","international trade internship","customer service internship French","sales internship French market","marketing internship French","logistics internship","summer internship 2027"]'`
+She only wants offers where a company is actively recruiting: keep ONLY `published` offers (never spontaneous applications abroad),
+preferably short (≤ 13 weeks, summer programmes) and paid (`payHint`), with `area: "abroad"` and the country in `city`.
+Say plainly in `concerns`: dates outside April–June, visa needs (UK requires a visa for EU students; do not assume her nationality),
+application through the company's site (not by email), CV in English needed, any application deadline.
+
 Look broadly: besides export and logistics, any role where her languages (English C2, Spanish B2) and business courses
 are useful counts: purchasing, sales administration, customer service / relations with foreign customers, marketing and
 communication in international companies, events and trade fairs, tourism and travel, translation, chambers of commerce,
