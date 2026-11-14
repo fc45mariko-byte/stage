@@ -135,6 +135,22 @@ Aim for quality: at most **6 new opportunities per run**.
   or that require a Master / specific degree.
 - Location: if `locationEvidence` is missing, say so in `concerns`.
 
+### 5b. Go further for the contact address (every kept candidate without a verified, usable address)
+An opportunity with no address is of little use to her. When step 5 returns no `verified` contact, or only a
+privacy/press/after-sales address, run:
+`node scripts/find-email.mjs <website> --browser --max 40`
+It reads the sitemap, common contact/legal/careers paths, two levels of links, Cloudflare-protected addresses and pages
+built by scripts. Its `contacts` follow the same rule (address read on the organization's own pages = `verified`; a
+second domain that redirects to the website counts as its own). Prefer `kind: recruitment`, then `general`.
+Also apply to interested opportunities and ready applications that still have no address (at most 6 per run).
+If the site still gives nothing, do two web searches (`"@domain"` plus the organization's name, and name + "recrutement"
++ "candidature"). An address seen only on another site goes in `contacts` as `to_review` with a `detail` that says
+where it was seen; never `verified`. An address that the organization's own page presents as its own (legal notice
+publisher line, "send your CV to …") is `verified` even on a second domain. Never build an address from a pattern.
+Say in `detail` what kind of address it is (recruitment, general, customer service). When an application is `ready`
+with `contact: null`, set its `contact` to the recommended one (`verified: true|false`).
+If nothing is found, say in `concerns` how the organization takes applications (form, careers site).
+
 ### 6. Evaluate (you write this; it is labelled as a suggestion in the app)
 Using only the returned page texts and her profile (`profile/current.data`, use only confirmed facts and
 `transferable` items with `status: "confirmed"`; the handbook requirements are in `handbook/current`):
