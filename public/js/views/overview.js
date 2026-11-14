@@ -18,7 +18,7 @@ export async function mount(el, { overview }) {
   <div class="page-head"><div>
     <div class="eyebrow">${today}</div>
     <h1>Your internship search</h1>
-    <p class="lede">Licence 3 LEA, Commerce international. A 6-week internship between mid-April and June 2027, in Orléans or Paris.</p>
+    <p class="lede">Licence 3 LEA, Commerce international. A 6-week internship from 15 May to the end of June 2027, in Orléans or Paris.</p>
   </div>
   <a class="btn primary" href="#/discover">Review opportunities</a></div>
 

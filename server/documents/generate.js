@@ -9,7 +9,7 @@ import { parse } from '../db/index.js';
 
 const generationSchema = obj({
   cv: obj({
-    headline: str('One line under the name. Must stay factual, e.g. "Étudiante en Licence 3 LEA – Commerce international · recherche un stage de 6 semaines (avril–juin 2027)"'),
+    headline: str('One line under the name. Must stay factual, e.g. "Étudiante en Licence 3 LEA – Commerce international · recherche un stage de 6 semaines (15 mai – fin juin 2027)"'),
     profile: str('3–4 sentence profile paragraph for the CV, tailored to this organization, using only candidate facts'),
     experience_order: arr(str(), 'All experience ids, most relevant first'),
     experiences: arr(obj({ id: str(), include: { type: 'boolean' }, bullet_indices: arr({ type: 'integer' }, 'Indices of existing bullets to keep, in display order') })),
@@ -17,7 +17,7 @@ const generationSchema = obj({
     skills_order: arr(str(), 'Skill ids, most relevant first'),
   }),
   letter: obj({
-    subject_line: str('e.g. "Candidature spontanée – stage de 6 semaines (avril–juin 2027)"'),
+    subject_line: str('e.g. "Candidature spontanée – stage de 6 semaines (15 mai – fin juin 2027)"'),
     recipient_line: str('Optional second line under the organization name (e.g. "Service Export" or "Service des ressources humaines") only if supported by the sources, else empty'),
     salutation: str(),
     paragraphs: arr(str(), '3 or 4 paragraphs'),

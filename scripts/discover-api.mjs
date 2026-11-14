@@ -137,7 +137,7 @@ const evalSchema = obj({
 async function evaluate(c, v) {
   const facts = { ...profile, transferable: (profile.transferable || []).filter((t) => t.status === 'confirmed'), questions: (profile.questions || []).filter((q) => q.answer) };
   return jsonCall({ effort: 'medium', maxTokens: 8000, schema: evalSchema,
-    system: 'You assess whether an organization could realistically host a specific student for a 6-week internship (L3 LEA, Commerce international), April–June 2027. Use only the quoted sources for facts about the organization and only the profile for facts about her. Never invent experience or skills. Suggestions must be modest and realistic.',
+    system: 'You assess whether an organization could realistically host a specific student for a 6-week internship (L3 LEA, Commerce international), 15 May–30 June 2027. Use only the quoted sources for facts about the organization and only the profile for facts about her. Never invent experience or skills. Suggestions must be modest and realistic.',
     user: `PROFILE:\n${JSON.stringify(facts)}\n\nORGANIZATION: ${c.name} (${c.website}), ${c.kind === 'published' && v.listing ? `published offer: ${v.listing.title} (${v.listing.url})` : 'spontaneous application'}\n\nQUOTED SOURCES:\n${v.sourcesText || '(none)'}\n\nThe handbook on file is the 2021–2022 edition (210 hours = 6 weeks of 35 h; mission related to LEA teaching; department must validate). Mention a point to check in handbookNotes only if relevant.` });
 }
 

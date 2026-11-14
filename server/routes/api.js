@@ -217,7 +217,7 @@ export function apiRouter() {
     const prof = currentProfile().data;
     A.updateDraft(id, {
       cv: { headline: prof.identity.headline, profile: prof.internship.cv_profile_text, experience_order: prof.experiences.map((e) => e.id), experiences: prof.experiences.map((e) => ({ id: e.id, include: true, bullet_indices: e.bullets.map((_, i) => i) })), course_highlights: [], skills_order: prof.skills.map((s) => s.id) },
-      letter: { subject_line: 'Candidature spontanée – stage de 6 semaines (avril–juin 2027)', recipient_line: '', salutation: 'Madame, Monsieur,', paragraphs: [''], closing: "Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées." },
+      letter: { subject_line: 'Candidature spontanée – stage de 6 semaines (15 mai – fin juin 2027)', recipient_line: '', salutation: 'Madame, Monsieur,', paragraphs: [''], closing: "Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées." },
       email_subject: '', email_body: '',
     });
     res.json({ ok: true });

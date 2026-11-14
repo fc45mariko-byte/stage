@@ -17,7 +17,7 @@ export const seedProfile = {
   },
   internship: {
     duration: '6 semaines',
-    period: 'à débuter entre mi-avril et juin 2027',
+    period: 'du 15 mai à fin juin 2027',
     target_areas: [
       'Commerce international', 'Import / export', 'Développement commercial international',
       'Administration des ventes export', 'Logistique internationale / supply chain', 'Achats',
@@ -25,7 +25,7 @@ export const seedProfile = {
       'Relation client internationale',
     ],
     locations: ['Orléans et alentours', 'Paris et Île-de-France'],
-    cv_profile_text: "Étudiante en troisième année de LEA (anglais, espagnol), parcours Commerce international, à l'Université d'Orléans. Je recherche un stage de 6 semaines à débuter entre mi-avril et juin 2027, en logistique / supply chain, commerce international, import-export, achats ou opérations commerciales, afin de mettre en pratique ma formation et de découvrir le fonctionnement d'une entreprise.",
+    cv_profile_text: "Étudiante en troisième année de LEA (anglais, espagnol), parcours Commerce international, à l'Université d'Orléans. Je recherche un stage de 6 semaines du 15 mai à fin juin 2027, en logistique / supply chain, commerce international, import-export, achats ou opérations commerciales, afin de mettre en pratique ma formation et de découvrir le fonctionnement d'une entreprise.",
   },
   languages: [
     { id: 'fr', name: 'Français', level: 'Langue maternelle' },
