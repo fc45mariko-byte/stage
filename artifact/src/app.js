@@ -51,8 +51,12 @@ const S = {
   ui: { editing: {}, actFilter: '', profileTab: 'facts', confirm: null, replies: {}, shownHash: {}, showEarlier: false },
   dirty: false,
 };
-const STATUS = { preparing: 'Being prepared', ready: 'Waiting for your approval', unknown: 'Check Sent folder', sent: 'Sent', follow_up: 'Follow-up needed', interview: 'Interview', rejected: 'Rejected', accepted: 'Accepted', withdrawn: 'Discarded' };
-const POST_SEND = ['sent', 'follow_up', 'interview', 'rejected', 'accepted'];
+const STATUS = { preparing: 'Being prepared', ready: 'Waiting for your approval', unknown: 'Check Sent folder', sent: 'Sent', follow_up: 'Follow-up needed', interview: 'Interview', rejected: 'Rejected', accepted: 'Accepted', not_delivered: 'Not delivered', withdrawn: 'Discarded' };
+const POST_SEND = ['sent', 'follow_up', 'interview', 'rejected', 'accepted', 'not_delivered'];
+// Addresses that do not reach anyone who hires: press, communication, customer service, privacy, legal.
+const BAD_KINDS = ['press', 'customer service', 'privacy/legal', 'communication'];
+const BAD_LOCAL = /^(press|presse|media|medias|communication|comm|marketing|sav|service-?clients?|serviceclients?|relation-?clients?|customer|support|help|dpo|rgpd|gdpr|privacy|legal|juridique|webmaster|abuse|shop|boutique|order|commande|newsletter|noreply|no-reply)\b/i;
+const usableContact = (c) => Boolean(c?.email) && !BAD_KINDS.includes(c.kind) && !BAD_LOCAL.test(c.email.split('@')[0]);
 const AREA = { orleans: 'Orléans area', paris: 'Paris area', other: 'Other' };
 const FIT = { strong: 'Strong match', possible: 'Possible match', weak: 'Weak match' };
 const blobUrl = (d) => (d?.assetId ? `/_blob/${d.assetId}` : '#');
@@ -418,8 +422,8 @@ async function savePdf(bytes, filename) {
 const PENDING = ['preparing', 'ready', 'unknown'];
 const KIND = { published: 'Published internship', speculative: 'Spontaneous application' };
 function bestContact(opp) {
-  const v = (opp?.contacts || []).filter((c) => c.status === 'verified');
-  return v.find((c) => c.recommended) || v.find((c) => /^(rh|recrutement|jobs|careers|stage)/i.test(c.email)) || v[0] || null;
+  const v = (opp?.contacts || []).filter((c) => c.status === 'verified' && usableContact(c));
+  return v.find((c) => /^(rh|drh|recrutement|recruitment|jobs?|careers?|stages?|talents?|candidature)/i.test(c.email)) || v.find((c) => c.recommended) || v[0] || null;
 }
 async function markNotifRead(pred) {
   for (const n of S.notifications.filter((x) => !x.read && pred(x))) {
@@ -437,8 +441,8 @@ async function decide(oppId, decision) {
   let app = S.apps.find((a) => a.oppId === oppId && a.status !== 'withdrawn');
   if (!app) {
     const id = uid('app');
-    const c = bestContact(opp) || (opp.contacts || []).find((x) => x.status !== 'failed');
-    const doc = { oppId, orgName: opp.name, website: opp.website, city: opp.city || '', area: opp.area || '', kind: opp.kind, listingUrl: opp.listingUrl || '', position: opp.position || '', status: 'preparing', language: 'fr', contact: c ? { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, verified: c.status === 'verified' } : null, cv: null, letter: null, emailSubject: '', emailBody: '', review: null, events: [], failedAttempts: [], createdAt: nowIso(), updatedAt: nowIso() };
+    const c = bestContact(opp) || (opp.contacts || []).find((x) => x.status !== 'failed' && usableContact(x));
+    const doc = { oppId, orgName: opp.name, website: opp.website, city: opp.city || '', area: opp.area || '', kind: opp.kind, listingUrl: opp.listingUrl || '', position: opp.position || '', status: 'preparing', language: 'fr', contact: c ? { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, kind: c.kind || '', verified: c.status === 'verified' } : null, cv: null, letter: null, emailSubject: '', emailBody: '', review: null, events: [], failedAttempts: [], createdAt: nowIso(), updatedAt: nowIso() };
     await C.db.collection('applications').doc(id).set(doc);
     await log('decision', `Your agent started preparing an application to ${opp.name}`, { app: id });
     app = { id, ...doc };
@@ -466,6 +470,7 @@ function readiness(app) {
   const cs = contactState(app);
   if (cs === 'missing') p.push('There is no recipient address yet.');
   if (cs === 'unverified') p.push(`Review the address ${app.contact.email} before sending.`);
+  if (app.contact?.email && !app.contact.reviewedByYou && !usableContact({ email: app.contact.email, kind: app.contact.kind })) p.push(`${app.contact.email} is a press, customer service or similar address: it rarely reaches anyone who hires. Use the recruitment contact, the person to write to, or their application form instead.`);
   return p;
 }
 async function updateDraft(appId, patch, label) {
@@ -853,7 +858,7 @@ function emailEditor(a) {
 function recipientChooser(a) {
   const opp = oppById(a.oppId);
   return html`<form data-form="pick-recipient" class="stack editor"><span class="lbl">Choose the recipient</span>
-    ${(opp?.contacts || []).map((c) => html`<label class="check"><input type="radio" name="email" value="${c.email}" ${c.email === a.contact?.email ? 'checked' : ''} ${c.status === 'verified' ? '' : 'disabled'}><span class="break">${c.email} ${c.status === 'verified' ? html`<span class="tag verified">Verified</span>` : html`<span class="tag warn">Not verified</span>`}</span></label>`)}
+    ${(opp?.contacts || []).map((c) => html`<label class="check"><input type="radio" name="email" value="${c.email}" ${c.email === a.contact?.email ? 'checked' : ''} ${c.status === 'verified' && usableContact(c) ? '' : 'disabled'}><span class="break">${c.email} ${!usableContact(c) ? html`<span class="tag warn">Press / customer service</span>` : c.status === 'verified' ? html`<span class="tag verified">Verified</span>` : html`<span class="tag warn">Not verified</span>`}</span></label>`)}
     <div class="row"><button class="btn small primary" type="submit">Use this address</button><button type="button" class="btn small ghost" data-act="edit" data-v="">Cancel</button></div></form>`;
 }
 function reviewView(a) {
@@ -1110,7 +1115,7 @@ document.addEventListener('submit', (e) => {
     'pick-recipient': async () => {
       const a = appById(id); const c = (oppById(a.oppId)?.contacts || []).find((x) => x.email === fd.get('email'));
       if (!c) throw new Error('Choose an address.');
-      await updateDraft(id, { contact: { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, verified: true } }, 'Recipient'); done('Recipient changed');
+      await updateDraft(id, { contact: { email: c.email, evidenceUrl: c.evidenceUrl, detail: c.detail, checkedAt: c.checkedAt, kind: c.kind || '', verified: true } }, 'Recipient'); done('Recipient changed');
     },
     recipient: async () => {
       const em = String(fd.get('email') || '').trim().toLowerCase();

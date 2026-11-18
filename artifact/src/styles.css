@@ -173,6 +173,7 @@ dl.kv ul { margin: 0; padding-left: 18px; }
 .final { border: 1px solid var(--accent); background: var(--surface); border-radius: var(--radius); padding: 20px 22px; }
 .pill { display: inline-block; font-size: .73rem; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); white-space: nowrap; }
 .pill.awaiting_approval, .pill.unknown { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.pill.not_delivered { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .pill.sent, .pill.follow_up { background: var(--accent-soft); color: var(--accent-ink); border-color: transparent; }
 .pill.interview, .pill.accepted { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .timeline { list-style: none; margin: 0; padding: 0 0 0 18px; border-left: 1px solid var(--line-strong); display: grid; gap: 16px; }

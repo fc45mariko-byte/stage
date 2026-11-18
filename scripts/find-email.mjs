@@ -45,7 +45,8 @@ const kindOf = (email, ctx, url) => {
   const s = `${email} ${url}`.toLowerCase(); const c = `${s} ${ctx}`.toLowerCase();
   if (/(recrut|recruit|career|carriere|job|emploi|rh@|\brh\b|hr@|drh|talent|stage|candidat|people@)/.test(s)) return 'recruitment';
   if (/(dpo|privacy|rgpd|gdpr|donnees|data\.?protection|vieprivee|cnil|legal|juridique|abuse|webmaster|compliance|ethic|alert)/.test(s)) return 'privacy/legal';
-  if (/(presse|press|media|communication)/.test(s)) return 'press';
+  if (/(presse|press|media)/.test(s)) return 'press';
+  if (/(communication|marketing|newsletter)/.test(s.split('@')[0] + ' ' + s.split(' ')[0])) return 'communication';
   if (/(sav|service\.?client|customer|commande|order|support|reclam)/.test(s)) return 'customer service';
   if (/(recrut|candidat|cv |stage|emploi)/.test(c)) return 'recruitment';
   if (/(contact|info|accueil|bonjour|hello|welcome)/.test(s)) return 'general';

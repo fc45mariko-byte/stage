@@ -11,6 +11,42 @@ and you never send an application.
 Workspace (a private claude.ai artifact; use the `ArtifactData` tool, acting as her):
 `https://claude.ai/artifact/AvsXCG9873cXhXhaJpkji5`
 
+## Strategy (decided by her on 18 November 2026, after the first replies)
+
+What the replies showed: 20 applications sent, two refusals ("we don't take internships under 4 months";
+"we have no wholesale department"), otherwise silence or automatic replies. Two emails did not arrive.
+So, from now on:
+
+**A. Target organizations that can take a short internship (6 weeks, 15 May to end of June 2027).**
+Prefer, in this order:
+1. Organizations whose busy season is May–June: trade fairs, congresses and events held in May–June 2027
+   (event organizers, exhibitors' services, venues; for example the Paris Air Show at Le Bourget, June 2027),
+   festivals, tourism and travel in season (tourist offices, guided tours, hotels with international guests,
+   tour operators, river cruises on the Loire), language stays and summer programmes.
+2. Small and medium companies with an international activity (export SMEs, importers, freight forwarders'
+   local agencies, customs brokers, wine and spirits merchants), chambers of commerce (CCI Loiret, the
+   foreign chambers in Paris), local economic development agencies, international associations.
+3. Organizations that state short internships: listings of 1 to 3 months, "stage de 6 à 8 semaines",
+   "stage BTS", "stage de L2/L3", "stage d'observation", or summer jobs/internships starting in May or June.
+
+Avoid large groups whose intern offers are all 4–6 months (big luxury, energy, defence, banks, FMCG
+head offices): do not propose them as spontaneous applications any more. A published offer from such a group
+that states 2 months or less is still fine.
+Before writing a spontaneous opportunity, check on the organization's own pages that the team or activity
+exists today (not only in an old LinkedIn offer). Say in `concerns` if you could not.
+
+**B. Only addresses that reach someone who hires.**
+A usable address is a recruitment / HR address (recrutement@, rh@, jobs@, careers@, stage@, candidature@...),
+or the address of a named manager or HR person given on the organization's own website, or a general
+contact address of a small organization (contact@ / info@ of an SME, a chamber, an agency, a tourist office).
+Never recommend, and never put in an application's `contact`, an address of the press, media,
+communication, marketing, customer service / after-sales, shop, privacy / DPO, legal, webmaster or support.
+You may list them in `contacts` with `kind` set, but never with `recommended: true`.
+Every contact you write has `kind`: `recruitment` | `named person` | `general` | `press` | `communication` |
+`customer service` | `privacy/legal` | `other`.
+If the only way in is an application form, a careers site or LinkedIn, set no contact, and say so in
+`concerns` with the link ("Apply through their careers site: <url>").
+
 ## Hard rules
 
 1. Never invent an organization, a listing, a person, an email address or a fact. Keep an organization
@@ -117,15 +153,22 @@ a. **Published internships**: search job boards and career pages for internships
    LinkedIn job pages, company "carrières / recrutement" pages. Queries in French, e.g.
    `stage assistant export Orléans 2027`, `stage import export Loiret`, `stage commerce international Paris mai juin 2027`,
    `stage ADV export`, `stage logistique internationale Orléans`, `stage assistant commercial anglais espagnol Paris`.
+   Add short-duration queries every run: `stage 2 mois mai juin 2027`, `stage 6 semaines`, `stage 8 semaines`,
+   `stage court commerce international`, `stage salon juin 2027`, `stage événementiel mai juin 2027`,
+   `stage office de tourisme été 2027`, `stage accueil international juin 2027`, `stage BTS commerce international mai`.
    Prefer the employer's own listing page; a job-board page is acceptable as the listing URL.
 b. **Spontaneous applications**: organizations with real international activity where an LEA intern makes sense:
    exporters and import/export SMEs, international logistics and freight forwarders (Orléans logistics hubs:
    Ormes, Saran, Saint-Cyr-en-Val), manufacturers that export (Loiret cosmetics/perfume, food, wine), CCI Loiret,
    Team France Export / Business France, Dev'Up Centre-Val de Loire, international associations and institutions in Paris.
    Directories such as CCI exporter lists are good starting points.
+   Most of all (Strategy A): event organizers and venues with trade fairs or congresses in May–June 2027 (check the
+   2027 calendars of Paris expo venues and of Orléans: CO'Met, Parc des expositions), the exhibitors of those fairs
+   with an export activity, tourist offices and tour operators before the summer season, hotels with
+   international guests, language-stay and summer-programme organizers, foreign chambers of commerce in Paris.
 
 Collect candidates: name, official website, area, and for published ones the listing URL. Skip known domains / listing URLs.
-Aim for quality: at most **6 new opportunities per run**.
+Aim for quality: at most **6 new opportunities per run**, chosen by the Strategy section above (short-internship targets first, usable addresses only).
 
 ### 5. Verify every candidate
 `node scripts/verify-org.mjs <website> --area <area> [--listing <listing url>]`
@@ -141,7 +184,7 @@ privacy/press/after-sales address, run:
 `node scripts/find-email.mjs <website> --browser --max 40`
 It reads the sitemap, common contact/legal/careers paths, two levels of links, Cloudflare-protected addresses and pages
 built by scripts. Its `contacts` follow the same rule (address read on the organization's own pages = `verified`; a
-second domain that redirects to the website counts as its own). Prefer `kind: recruitment`, then `general`.
+second domain that redirects to the website counts as its own). Prefer `kind: recruitment`, then a named person, then `general` (Strategy B); never recommend press, communication, customer service or privacy addresses.
 Also apply to interested opportunities and ready applications that still have no address (at most 6 per run).
 If the site still gives nothing, do two web searches (`"@domain"` plus the organization's name, and name + "recrutement"
 + "candidature"). An address seen only on another site goes in `contacts` as `to_review` with a `detail` that says
@@ -168,7 +211,7 @@ For each kept opportunity create `opportunities/<id>` (id: `opp-<domain with dot
 { name, website (finalUrl), domain, area: "orleans"|"paris", city, industry,
   kind: "published"|"speculative", listingUrl, listingTitle, listingSource (e.g. "Welcome to the Jungle"),
   summary, description, position, responsibilities[], matchReasons[], concerns[], fit, handbookNotes,
-  contacts: [ {email, evidenceUrl, status, detail, checkedAt, recommended?} ]   // from the script only; mark the best one recommended: true
+  contacts: [ {email, evidenceUrl, status, kind, detail, checkedAt, recommended?} ]   // from the script only; recommended: true only on a usable address (Strategy B)
   sources: [search result URLs that led you here], sourcesText: <up to 6000 chars of the most useful page texts>,
   locationEvidence, websiteCheckedAt: <date>, status: "new", createdAt: <now>, foundByRun: runId }
 ```
@@ -180,6 +223,9 @@ For each `applications` doc with `status: "preparing"` whose `updatedAt` is more
 interest but the page did not finish writing), prepare it following `agent/WRITING.md`: set `cv`, `letter`,
 `emailSubject`, `emailBody`, `review`, `status: "ready"`, and add a notification
 `{type: "application", appId, title: "Your application to <org> is ready", body: "Review it and approve it to send.", read: false}`.
+If its `contact` is missing or is not a usable address (Strategy B), set `contact` to the best usable contact of
+the opportunity (`{email, evidenceUrl, detail, checkedAt, kind, verified}`), or to `null` if there is none,
+and say in `review` how to apply instead (form, careers site, LinkedIn).
 Never set any other status and never send anything.
 
 ### 9. Finish
