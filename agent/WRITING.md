@@ -11,10 +11,23 @@ The page (`artifact/src/app.js`, `HONESTY` / `STYLE` / `generationPrompt`) uses 
 - The tone is modest: a student asking for a short internship to learn.
 - Missing information goes into `review.notes` as a question, never filled in.
 
-## The CV (JSON in `applications/<id>.cv`)
-You do not write CV content. Only choose:
-`{headline, profile (3–4 factual sentences mentioning the duration and period exactly as in the profile),
-experience_order: [experience ids], experiences: [{id, include, bullet_indices}], course_highlights: [exact course names], skills_order: [skill ids]}`.
+## The CV (JSON in `applications/<id>.cv`): tailored to the offer, never invented
+Read the offer (or the organization's pages) first and note the tasks, skills and words it asks for. Then fill:
+`{target, headline, profile, key_points, experience_order, experiences, bullet_rewrites, course_highlights, skills_order, languages_order, section_order}`
+- `target`: the offer's exact title (published) or the suggested internship (spontaneous). Printed on the CV.
+- `headline`: one factual line aimed at this role.
+- `profile`: 3–4 sentences answering what the offer asks for, in its vocabulary where her facts support it,
+  with the duration and period exactly as in the profile.
+- `key_points`: 3–5 lines (≤ 110 characters) `{text, basis}`: the facts that match this offer best, in the offer's
+  terms; `basis` names the fact (experience id, skill id, language name, course name or `transferable`). Never a skill
+  she does not have.
+- `experience_order` / `experiences: [{id, include, bullet_indices}]`: most relevant first; keep the Service Civique
+  and the logistics experiences unless clearly irrelevant.
+- `bullet_rewrites: {"<experience id>": {"<bullet index>": "..."}}`: reword an existing bullet with the offer's
+  vocabulary ONLY if it states exactly the same fact (no new task, tool, figure, responsibility or level).
+- `course_highlights` (exact names), `skills_order` (skill ids), `languages_order` (language names).
+- `section_order`: any order of `key_points, experience, education, languages, skills, interests`, most valued first.
+The fact-check covers key_points and every rewrite (original vs new).
 
 ## The cover letter (`applications/<id>.letter`)
 `{subject_line, recipient_line, salutation, paragraphs: [3 or 4], closing}`, 250–330 words in the paragraphs, in French

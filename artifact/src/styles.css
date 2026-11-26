@@ -158,6 +158,7 @@ dl.kv ul { margin: 0; padding-left: 18px; }
 .paper { background: #fffefa; color: #2a2926; border: 1px solid var(--line); border-radius: 4px; padding: clamp(18px, 5%, 44px); font-family: 'Newsreader', Georgia, serif; font-size: .95rem; line-height: 1.45; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.05); }
 .paper .p-name { font-size: 1.7rem; line-height: 1.1; }
 .paper .p-head { font-family: 'Inter', sans-serif; color: #5c6338; font-size: .82rem; margin-top: 4px; }
+.paper .p-target { font-family: 'Inter', sans-serif; font-weight: 600; font-size: .8rem; margin-top: 8px; color: #2a2926; }
 .paper .p-contact { font-family: 'Inter', sans-serif; color: #6b6a64; font-size: .74rem; margin-top: 4px; }
 .paper .p-sec { font-family: 'Inter', sans-serif; font-size: .66rem; letter-spacing: .14em; text-transform: uppercase; color: #5c6338; border-bottom: 1px solid #d9d5c8; padding-bottom: 3px; margin: 16px 0 8px; }
 .paper .p-entry { display: flex; justify-content: space-between; gap: 10px; }
@@ -349,3 +350,6 @@ nav.main .count { background: var(--accent); color: #fff; border-radius: 999px; 
 /* confetti */
 .confetti { position: fixed; top: -12px; width: 9px; height: 14px; border-radius: 2px; z-index: 100; pointer-events: none; animation: fall linear forwards; }
 @keyframes fall { to { transform: translate3d(var(--dx), 105vh, 0) rotate(720deg); opacity: .9; } }
+
+.bullets .rw { margin: 4px 0 6px 26px; width: calc(100% - 26px); font-size: .84rem; padding: 6px 10px; }
+.tailor { border-top: 5px solid var(--sun); }

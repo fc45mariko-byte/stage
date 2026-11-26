@@ -169,7 +169,7 @@ LANGUAGE OF THE LETTER AND EMAIL: ${app.language === 'en' ? 'English' : 'French'
 }
 
 const GEN_SHAPE = `Reply with only a JSON object of this exact shape:
-{"cv":{"headline":"...","profile":"...","experience_order":["<experience id>",...],"experiences":[{"id":"<experience id>","include":true,"bullet_indices":[0,1]}],"course_highlights":["<course name copied exactly>"],"skills_order":["<skill id>"]},
+{"cv":{"target":"<the offer's exact title, or the suggested internship>","headline":"...","profile":"...","key_points":[{"text":"...","basis":"<experience id | skill id | language name | course name | 'transferable'>"}],"experience_order":["<experience id>",...],"experiences":[{"id":"<experience id>","include":true,"bullet_indices":[0,1]}],"bullet_rewrites":{"<experience id>":{"<bullet index>":"<same fact, reworded with the offer's vocabulary>"}},"course_highlights":["<course name copied exactly>"],"skills_order":["<skill id>"],"languages_order":["<language name>"],"section_order":["key_points","experience","education","languages","skills","interests"]},
  "letter":{"subject_line":"...","recipient_line":"","salutation":"...","paragraphs":["...","...","..."],"closing":"..."},
  "email":{"subject":"...","body":"..."},
  "notes_for_candidate":["..."]}`;
@@ -181,7 +181,16 @@ ${HONESTY}
 
 ${STYLE[app.language] || STYLE.fr}
 
-CV rules: you do not write CV content. You only (1) write a short factual headline and a 3–4 sentence profile paragraph that mentions the internship duration and period exactly as in the facts, (2) order her real experiences and choose which existing bullets to show (ids and bullet indices from the facts; keep the Service Civique and the logistics experiences unless clearly irrelevant), (3) choose real courses to highlight (copied exactly), (4) order skill groups by id.
+CV rules: the CV must be tailored to THIS offer or organization, using only her real facts.
+First read the offer / organization sources and list for yourself the tasks, skills and words they ask for. Then:
+(1) "target": the exact title of the published offer, or the suggested internship for a spontaneous application.
+(2) "headline": one factual line aimed at this role (e.g. "Étudiante en L3 LEA anglais-espagnol · Commerce international · disponible du 15 mai à fin juin 2027").
+(3) "profile": 3–4 sentences that answer what this offer asks for, with its own vocabulary where her facts support it, mentioning the internship duration and period exactly as in the facts.
+(4) "key_points": 3 to 5 short lines (max 110 characters each), the facts of her profile that match this offer best, phrased in the offer's terms. Each one must rest on one fact named in "basis". Never a skill she does not have.
+(5) Order her real experiences by relevance to this offer and choose which existing bullets to show; keep the Service Civique and the logistics experiences unless clearly irrelevant.
+(6) "bullet_rewrites": you may reword an existing bullet so it uses the offer's vocabulary, ONLY if it states exactly the same fact (no new task, tool, figure, responsibility or level). Leave out bullets that need no change.
+(7) Choose real courses to highlight (copied exactly), order skill groups by id and languages by usefulness for this offer.
+(8) "section_order": put first what this offer values most (e.g. languages early for a language-heavy role, experience before education for an operational role).
 
 Cover letter: 250–330 words in the paragraphs. 1: who she is and what she asks for (dates). 2: what she understood of the organization's activity and why it relates to her LEA international-trade studies, citing concrete activities from the sources. 3: what she can realistically bring as an intern, based only on her facts, and what she wants to learn. Optional short 4: availability for a meeting. Do not repeat the CV line by line.
 Email: 60–120 words presenting the application, mentioning the two attachments (CV and cover letter), signed with her name and phone.
@@ -200,6 +209,8 @@ ${contextBlock(app, opp)}
 APPLICATION TO CHECK:
 CV headline: ${draft.cv.headline}
 CV profile: ${draft.cv.profile}
+CV key points (each must rest on her facts): ${(draft.cv.key_points || []).map((k) => `"${k.text}" [basis: ${k.basis}]`).join(' | ')}
+CV reworded bullets (each must state exactly the same fact as its original): ${rewriteList(draft.cv).map((r) => `ORIGINAL "${r.original}" → NEW "${r.text}"`).join(' | ') || 'none'}
 Letter subject: ${draft.letter.subject_line}
 ${draft.letter.salutation}
 ${draft.letter.paragraphs.join('\n\n')}
@@ -220,6 +231,13 @@ function sanitizeDraft(d) {
   d.cv.experiences = (d.cv.experiences || []).filter((e) => ids.includes(e.id)).map((e) => ({ id: e.id, include: e.include !== false, bullet_indices: (e.bullet_indices || []).filter(Number.isInteger) }));
   d.cv.course_highlights = (d.cv.course_highlights || []).filter((c) => courses.includes(c));
   d.cv.skills_order = (d.cv.skills_order || []).filter((id) => p.skills.some((s) => s.id === id));
+  d.cv.languages_order = (d.cv.languages_order || []).filter((n) => p.languages.some((l) => l.name === n));
+  d.cv.section_order = (d.cv.section_order || []).filter((x) => CV_SECTIONS.includes(x));
+  d.cv.target = String(d.cv.target || '').slice(0, 140);
+  d.cv.key_points = (d.cv.key_points || []).filter((k) => k && String(k.text || '').trim()).slice(0, 5).map((k) => ({ text: String(k.text).trim().slice(0, 130), basis: String(k.basis || '') }));
+  const rw = {};
+  for (const [eid, m] of Object.entries(d.cv.bullet_rewrites || {})) { const e = p.experiences.find((x) => x.id === eid); if (!e || !m || typeof m !== 'object') continue; for (const [i, t] of Object.entries(m)) { const n = Number(i); if (Number.isInteger(n) && n >= 0 && n < e.bullets.length && String(t || '').trim() && String(t).trim() !== e.bullets[n]) (rw[eid] ||= {})[n] = String(t).trim().slice(0, 200); } }
+  d.cv.bullet_rewrites = rw;
   d.letter.recipient_line ||= '';
   d.notes_for_candidate = (d.notes_for_candidate || []).map(String);
   return d;
@@ -227,7 +245,7 @@ function sanitizeDraft(d) {
 
 function localChecks(draft, lang) {
   const p = S.profile;
-  const texts = [draft.cv.headline, draft.cv.profile, draft.letter.subject_line, ...draft.letter.paragraphs, draft.letter.closing, draft.email?.subject ?? '', draft.email?.body ?? ''];
+  const texts = [draft.cv.headline, draft.cv.profile, ...(draft.cv.key_points || []).map((k) => k.text), ...rewriteList(draft.cv).map((r) => r.text), draft.letter.subject_line, ...draft.letter.paragraphs, draft.letter.closing, draft.email?.subject ?? '', draft.email?.body ?? ''];
   const out = [];
   const low = texts.join(' \n ').toLowerCase().replace(/’/g, "'");
   const hits = (BANNED[lang] || BANNED.fr).filter((w) => low.includes(w));
@@ -294,6 +312,18 @@ function sampleErrorText(e) {
 }
 
 // ---------- CV / letter content (shared by the on-screen paper and the PDF) ----------
+const CV_SECTIONS = ['key_points', 'experience', 'education', 'languages', 'skills', 'interests'];
+function rewriteList(cv) {
+  const out = [];
+  for (const [eid, m] of Object.entries(cv?.bullet_rewrites || {})) { const e = S.profile?.experiences.find((x) => x.id === eid); if (!e) continue; for (const [i, t] of Object.entries(m)) if (e.bullets[i] != null) out.push({ eid, i: Number(i), original: e.bullets[i], text: t }); }
+  return out;
+}
+function tailoringSummary(cv) {
+  if (!cv) return null;
+  const rw = rewriteList(cv).length; const kp = (cv.key_points || []).length;
+  if (!cv.target && !kp && !rw) return null;
+  return { target: cv.target, kp, rw };
+}
 function resolveCv(p, cv) {
   const exps = p.experiences;
   const ord = cv.experience_order || [];
@@ -303,32 +333,42 @@ function resolveCv(p, cv) {
     const e = exps.find((x) => x.id === id); const s = sel[id];
     const include = s ? s.include !== false : true;
     const idx = s?.bullet_indices?.length ? s.bullet_indices.filter((i) => i >= 0 && i < e.bullets.length) : e.bullets.map((_, i) => i);
-    return { ...e, include, bullets: idx.map((i) => e.bullets[i]) };
+    const rw = cv.bullet_rewrites?.[id] || {};
+    return { ...e, include, bullets: idx.map((i) => rw[i] || e.bullets[i]) };
   }).filter((e) => e.include);
   const hi = cv.course_highlights || [];
   const education = p.education.map((ed) => ({ ...ed, courses: (ed.courses || []).length ? [...hi.filter((c) => ed.courses.includes(c)), ...ed.courses.filter((c) => !hi.includes(c))] : [] }));
   const so = cv.skills_order || [];
   const skills = [...so.filter((id) => p.skills.some((s) => s.id === id)), ...p.skills.map((s) => s.id).filter((id) => !so.includes(id))].map((id) => p.skills.find((s) => s.id === id));
-  return { identity: p.identity, headline: cv.headline || p.identity.headline, profileText: cv.profile || p.internship.cv_profile_text, languages: p.languages, education, experiences, skills, interests: p.interests };
+  const lo = cv.languages_order || [];
+  const languages = [...lo.map((n) => p.languages.find((l) => l.name === n)).filter(Boolean), ...p.languages.filter((l) => !lo.includes(l.name))];
+  const so2 = (cv.section_order || []).filter((x) => CV_SECTIONS.includes(x));
+  const sections = [...so2, ...['key_points', 'languages', 'education', 'experience', 'skills', 'interests'].filter((x) => !so2.includes(x))];
+  return { identity: p.identity, headline: cv.headline || p.identity.headline, target: cv.target || '', profileText: cv.profile || p.internship.cv_profile_text, keyPoints: (cv.key_points || []).map((k) => k.text), languages, education, experiences, skills, interests: p.interests, sections };
 }
 const MONTHS = { fr: ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'], en: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] };
 function letterDate(date, lang, city) {
   const d = new Date(date);
   return lang === 'en' ? `${city}, ${d.getDate()} ${MONTHS.en[d.getMonth()]} ${d.getFullYear()}` : `${city}, le ${d.getDate() === 1 ? '1er' : d.getDate()} ${MONTHS.fr[d.getMonth()]} ${d.getFullYear()}`;
 }
-const LBL = { profile: 'Profil', languages: 'Langues', education: 'Formation', experience: 'Expériences', skills: 'Compétences', interests: "Centres d'intérêt", courses: 'Enseignements' };
+const LBL = { key_points: 'Compétences clés pour ce stage', target: 'Candidature', profile: 'Profil', languages: 'Langues', education: 'Formation', experience: 'Expériences', skills: 'Compétences', interests: "Centres d'intérêt", courses: 'Enseignements' };
 
 function cvPaper(p, cv) {
   const r = resolveCv(p, cv);
+  const part = {
+    key_points: () => (r.keyPoints.length ? html`<div class="p-sec">${LBL.key_points}</div><ul>${r.keyPoints.map((k) => html`<li>${k}</li>`)}</ul>` : ''),
+    languages: () => html`<div class="p-sec">${LBL.languages}</div><div class="p-langs">${r.languages.map((l) => html`<div><b>${l.name}</b><div class="p-small">${l.level}</div></div>`)}</div>`,
+    education: () => html`<div class="p-sec">${LBL.education}</div>${r.education.map((e) => html`<div class="p-entry"><b>${e.title}</b><span class="p-date">${e.dates}</span></div><div class="p-sub">${e.institution}</div>${e.courses.length ? html`<div class="p-small"><b>${LBL.courses} :</b> ${e.courses.join(' · ')}</div>` : ''}`)}`,
+    experience: () => html`<div class="p-sec">${LBL.experience}</div>${r.experiences.map((e) => html`<div class="p-entry"><b>${e.title}</b><span class="p-date">${e.dates}</span></div><div class="p-sub">${e.organization}</div>${e.summary ? html`<div>${e.summary}</div>` : ''}<ul>${e.bullets.map((b) => html`<li>${b}</li>`)}</ul>`)}`,
+    skills: () => html`<div class="p-sec">${LBL.skills}</div>${r.skills.map((x) => html`<div class="p-small"><b>${x.label} :</b> ${x.value}</div>`)}`,
+    interests: () => (r.interests ? html`<div class="p-sec">${LBL.interests}</div><div class="p-small">${r.interests}</div>` : ''),
+  };
   return html`<div class="paper" aria-label="CV preview">
     <div class="p-name">${r.identity.full_name}</div><div class="p-head">${r.headline}</div>
     <div class="p-contact">${[r.identity.phone, r.identity.email, r.identity.city].filter(Boolean).join('  ·  ')}</div>
+    ${r.target ? html`<div class="p-target">${LBL.target} : ${r.target}</div>` : ''}
     <div class="p-sec">${LBL.profile}</div><div>${r.profileText}</div>
-    <div class="p-sec">${LBL.languages}</div><div class="p-langs">${r.languages.map((l) => html`<div><b>${l.name}</b><div class="p-small">${l.level}</div></div>`)}</div>
-    <div class="p-sec">${LBL.education}</div>${r.education.map((e) => html`<div class="p-entry"><b>${e.title}</b><span class="p-date">${e.dates}</span></div><div class="p-sub">${e.institution}</div>${e.courses.length ? html`<div class="p-small"><b>${LBL.courses} :</b> ${e.courses.join(' · ')}</div>` : ''}`)}
-    <div class="p-sec">${LBL.experience}</div>${r.experiences.map((e) => html`<div class="p-entry"><b>${e.title}</b><span class="p-date">${e.dates}</span></div><div class="p-sub">${e.organization}</div>${e.summary ? html`<div>${e.summary}</div>` : ''}<ul>${e.bullets.map((b) => html`<li>${b}</li>`)}</ul>`)}
-    <div class="p-sec">${LBL.skills}</div>${r.skills.map((s) => html`<div class="p-small"><b>${s.label} :</b> ${s.value}</div>`)}
-    ${r.interests ? html`<div class="p-sec">${LBL.interests}</div><div class="p-small">${r.interests}</div>` : ''}
+    ${r.sections.map((k) => part[k]())}
   </div>`;
 }
 function letterPaper(p, app, letter, date = new Date()) {
@@ -371,22 +411,23 @@ function renderCvPdf(p, cv) {
   const section = (t) => { if (doc.y > doc.page.height - 85) doc.addPage(); doc.moveDown(0.4); doc.font('sans-semibold').fontSize(8.5).fillColor(ACC).text(t.toUpperCase(), { characterSpacing: 1.4 }); const y = doc.y + 3; doc.moveTo(x0, y).lineTo(x0 + W, y).lineWidth(0.6).strokeColor(RULE).stroke(); doc.y = y + 7; };
   const body = (t, o = {}) => doc.font('serif').fontSize(10.2).fillColor(INK).text(t, { lineGap: 1.5, ...o });
   const entry = (title, right, sub) => { const y = doc.y; doc.font('serif-semibold').fontSize(10.8).fillColor(INK).text(title, x0, y, { width: W - 110 }); const ya = doc.y; if (right) doc.font('sans').fontSize(9).fillColor(MUTED).text(right, x0 + W - 105, y + 1, { width: 105, align: 'right' }); doc.x = x0; doc.y = ya; if (sub) doc.font('serif-italic').fontSize(10.2).fillColor(MUTED).text(sub, x0, doc.y, { width: W }); };
+  if (r.target) { doc.moveDown(0.1); doc.font('sans-semibold').fontSize(9.5).fillColor(INK).text(`${LBL.target} : ${r.target}`); }
   section(LBL.profile); body(r.profileText, { align: 'justify' });
-  section(LBL.languages);
-  { const cw = W / r.languages.length; const y = doc.y; r.languages.forEach((l, i) => { doc.font('serif-semibold').fontSize(10.5).fillColor(INK).text(l.name, x0 + i * cw, y, { width: cw - 8 }); doc.font('sans').fontSize(9).fillColor(MUTED).text(l.level, x0 + i * cw, doc.y + 1, { width: cw - 8 }); }); doc.x = x0; doc.y = y + 30; }
-  section(LBL.education);
-  for (const ed of r.education) { entry(ed.title, ed.dates, ed.institution); if (ed.courses.length) { doc.moveDown(0.15); doc.font('sans-semibold').fontSize(9).fillColor(INK).text(`${LBL.courses} : `, x0, doc.y, { continued: true }); doc.font('sans').fontSize(9).text(ed.courses.join(' · ')); } doc.moveDown(0.5); }
-  section(LBL.experience);
-  for (const e of r.experiences) {
-    if (doc.y > doc.page.height - 75) doc.addPage();
-    entry(e.title, e.dates, e.organization);
-    if (e.summary) { doc.moveDown(0.1); body(e.summary, { width: W }); }
-    for (const b of e.bullets) { doc.moveDown(0.02); const y = doc.y; doc.font('serif').fontSize(10.2).fillColor(ACC).text('–', x0 + 2, y, { width: 10 }); doc.font('serif').fontSize(10.2).fillColor(INK).text(b, x0 + 14, y, { width: W - 14, lineGap: 0.8 }); }
-    doc.x = x0; doc.moveDown(0.4);
-  }
-  section(LBL.skills);
-  for (const s of r.skills) { doc.font('sans-semibold').fontSize(9.5).fillColor(INK).text(`${s.label} : `, x0, doc.y, { continued: true, lineGap: 2 }); doc.font('sans').fontSize(9.5).text(s.value, { lineGap: 2 }); }
-  if (r.interests) { section(LBL.interests); doc.font('sans').fontSize(9.5).fillColor(INK).text(r.interests); }
+  const parts = {
+    key_points: () => { if (!r.keyPoints.length) return; section(LBL.key_points); for (const k of r.keyPoints) { const y = doc.y; doc.font('serif').fontSize(10.2).fillColor(ACC).text('•', x0 + 2, y, { width: 10 }); doc.font('serif').fontSize(10.2).fillColor(INK).text(k, x0 + 14, y, { width: W - 14, lineGap: 0.8 }); doc.x = x0; } },
+    languages: () => { section(LBL.languages); const cw = W / r.languages.length; const y = doc.y; r.languages.forEach((l, i) => { doc.font('serif-semibold').fontSize(10.5).fillColor(INK).text(l.name, x0 + i * cw, y, { width: cw - 8 }); doc.font('sans').fontSize(9).fillColor(MUTED).text(l.level, x0 + i * cw, doc.y + 1, { width: cw - 8 }); }); doc.x = x0; doc.y = y + 30; },
+    education: () => { section(LBL.education); for (const ed of r.education) { entry(ed.title, ed.dates, ed.institution); if (ed.courses.length) { doc.moveDown(0.15); doc.font('sans-semibold').fontSize(9).fillColor(INK).text(`${LBL.courses} : `, x0, doc.y, { continued: true }); doc.font('sans').fontSize(9).text(ed.courses.join(' · ')); } doc.moveDown(0.5); } },
+    experience: () => { section(LBL.experience); for (const e of r.experiences) {
+      if (doc.y > doc.page.height - 75) doc.addPage();
+      entry(e.title, e.dates, e.organization);
+      if (e.summary) { doc.moveDown(0.1); body(e.summary, { width: W }); }
+      for (const bl of e.bullets) { doc.moveDown(0.02); const y = doc.y; doc.font('serif').fontSize(10.2).fillColor(ACC).text('–', x0 + 2, y, { width: 10 }); doc.font('serif').fontSize(10.2).fillColor(INK).text(bl, x0 + 14, y, { width: W - 14, lineGap: 0.8 }); }
+      doc.x = x0; doc.moveDown(0.4);
+    } },
+    skills: () => { section(LBL.skills); for (const x of r.skills) { doc.font('sans-semibold').fontSize(9.5).fillColor(INK).text(`${x.label} : `, x0, doc.y, { continued: true, lineGap: 2 }); doc.font('sans').fontSize(9.5).text(x.value, { lineGap: 2 }); } },
+    interests: () => { if (r.interests) { section(LBL.interests); doc.font('sans').fontSize(9.5).fillColor(INK).text(r.interests); } },
+  };
+  for (const k of r.sections) parts[k]();
   return pdfBytes(doc);
 }
 function renderLetterPdf(p, app, letter, date = new Date()) {
@@ -944,6 +985,7 @@ function quickCard(a) {
     <div class="small muted">${[a.position, a.city].filter(Boolean).join(' · ')}</div>
     ${site ? html`<div class="to">🔗 No recruiting email: apply on their site${url ? html` (<a href="${url}" target="_blank" rel="noopener noreferrer">${hostOf(url)}</a>)` : ''}</div>`
       : html`<div class="to">✉️ To <b>${a.contact.email}</b> ${contactState(a) === 'verified' ? html`<span class="tag verified">Verified</span>` : contactState(a) === 'reviewed' ? html`<span class="tag warn">Confirmed by you</span>` : html`<span class="tag warn">To review</span>`}</div>`}
+    ${tailoringSummary(a.cv) ? html`<div class="small">🎯 CV adapted${a.cv.target ? html` to <b>${a.cv.target}</b>` : ''}: ${a.cv.key_points?.length || 0} key skills, ${rewriteList(a.cv).length} reworded lines</div>` : html`<div class="row small"><span class="muted">CV not adapted to this offer yet.</span>${C.sample ? html`<button class="btn small sun" data-act="retailor" data-id="${a.id}">🎯 Adapt my CV</button>` : ''}</div>`}
     <details><summary>👀 Read the email and the letter</summary>
       ${!site ? html`<div class="email-subj section-sm">${a.emailSubject}</div><div class="email-body">${a.emailBody}</div>` : ''}
       <div class="email-body">${(a.letter?.paragraphs || []).join('\n\n')}</div>
@@ -1051,6 +1093,15 @@ function reviewNotes(a) {
   return html`${items.length ? html`<div class="notice warn"><strong>Points to look at before approving</strong><ul>${items}</ul></div>` : html`<div class="notice small">Checked against your profile: every statement about you matches it.${r.regenerated ? ' A first draft was corrected automatically.' : ''}</div>`}
     ${(r.notes || []).length ? html`<div class="notice small"><strong>Questions from your agent</strong> (answer them in your profile to improve the next version)<ul>${r.notes.map((c) => html`<li>${c}</li>`)}</ul></div>` : ''}`;
 }
+function tailorNote(a) {
+  const t = tailoringSummary(a.cv);
+  const rws = rewriteList(a.cv);
+  if (!t) return html`<div class="section notice small">🎯 This CV is not adapted to the offer yet. ${C.sample ? html`<button class="btn small sun" data-act="retailor">Adapt my CV to this offer</button>` : ''}</div>`;
+  return html`<details class="section block tailor"><summary>🎯 CV adapted to ${t.target || 'this organization'}: ${t.kp} key skills, ${t.rw} reworded line${t.rw > 1 ? 's' : ''}</summary>
+    ${(a.cv.key_points || []).length ? html`<div class="section-sm"><b>Key skills</b><ul class="small">${a.cv.key_points.map((k) => html`<li>${k.text} <span class="xs muted">(from: ${k.basis})</span></li>`)}</ul></div>` : ''}
+    ${rws.length ? html`<div class="section-sm"><b>Reworded lines</b> <span class="xs muted">same fact, the offer's words</span><ul class="small">${rws.map((r) => html`<li><span class="muted">${r.original}</span><br>→ ${r.text}</li>`)}</ul></div>` : ''}
+    <div class="row section-sm">${C.sample ? html`<button class="btn small" data-act="retailor">🔄 Adapt again</button>` : ''}<button class="btn small ghost" data-act="edit" data-v="cv">Edit by hand</button></div></details>`;
+}
 function recipientBlock(a) {
   const cs = contactState(a); const opp = oppById(a.oppId);
   const others = (opp?.contacts || []).filter((c) => c.email !== a.contact?.email);
@@ -1072,14 +1123,17 @@ function cvEditor(a) {
   const sel = Object.fromEntries((cv.experiences || []).map((e) => [e.id, e]));
   return html`<form data-form="cv" class="stack editor">
     <p class="small muted">Facts come from your <a href="#profile">profile</a>. Here you choose what to show for this organization.</p>
+    <div class="field"><label class="lbl" for="cv-target">🎯 Position applied for (shown on the CV)</label><input id="cv-target" name="target" type="text" value="${cv.target || ''}" data-dirty></div>
     <div class="field"><label class="lbl" for="cv-head">Headline</label><input id="cv-head" name="headline" type="text" value="${cv.headline || ''}" data-dirty></div>
     <div class="field"><label class="lbl" for="cv-prof">Profile paragraph</label><textarea id="cv-prof" name="profile" class="tall serif" data-dirty>${cv.profile || ''}</textarea></div>
+    <div class="field"><label class="lbl" for="cv-kp">✨ Key skills for this internship (one per line, 3 to 5, only true facts)</label><textarea id="cv-kp" name="key_points" data-dirty>${(cv.key_points || []).map((k) => k.text).join('\n')}</textarea></div>
     <div class="field"><span class="lbl">Experiences</span><div id="exps" class="stack">${order.map((id) => {
       const e = p.experiences.find((x) => x.id === id); const s = sel[id];
       const inc = s ? s.include !== false : true; const idx = s?.bullet_indices?.length ? s.bullet_indices : e.bullets.map((_, i) => i);
       return html`<div class="exp ${inc ? '' : 'off'}" data-exp="${id}"><div class="exp-head"><label class="check"><input type="checkbox" name="inc_${id}" ${inc ? 'checked' : ''} data-dirty data-act-change="toggle-exp"><span><b>${e.title}</b><div class="xs muted">${e.organization}</div></span></label>
         <div class="order"><button type="button" data-act="up" aria-label="Move up">↑</button><button type="button" data-act="down" aria-label="Move down">↓</button></div></div>
-        <div class="bullets">${e.bullets.map((b, i) => html`<label class="check small"><input type="checkbox" name="b_${id}_${i}" ${idx.includes(i) ? 'checked' : ''} data-dirty><span>${b}</span></label>`)}</div></div>`;
+        <div class="bullets">${e.bullets.map((b, i) => html`<div><label class="check small"><input type="checkbox" name="b_${id}_${i}" ${idx.includes(i) ? 'checked' : ''} data-dirty><span>${b}</span></label>
+          <input type="text" class="rw" name="rw_${id}_${i}" value="${cv.bullet_rewrites?.[id]?.[i] || ''}" placeholder="Wording for this offer (optional, same fact)" aria-label="Wording for this offer" data-dirty></div>`)}</div></div>`;
     })}</div></div>
     <div class="field"><span class="lbl">Courses to highlight</span><div class="stack">${p.education.flatMap((e) => e.courses || []).map((c) => html`<label class="check"><input type="checkbox" name="course" value="${c}" ${(cv.course_highlights || []).includes(c) ? 'checked' : ''} data-dirty><span>${c}</span></label>`)}</div></div>
     <div class="row"><button class="btn primary" type="submit">Save</button><button type="button" class="btn ghost" data-act="edit" data-v="">Cancel</button></div>
@@ -1119,6 +1173,7 @@ function reviewView(a) {
   <section class="section block">${ed === 'recipient' ? recipientChooser(a) : recipientBlock(a)}</section>
   <section class="section block"><div class="block-head"><h3>Email</h3>${ed !== 'email' ? html`<button class="btn small ghost" data-act="edit" data-v="email">Edit</button>` : ''}</div>
     ${ed === 'email' ? emailEditor(a) : html`<div class="small muted">Subject</div><div class="email-subj">${a.emailSubject}</div><div class="email-body section-sm">${a.emailBody}</div><div class="xs muted section-sm break">Attached: ${names.cv} · ${names.letter}</div>`}</section>
+  ${tailorNote(a)}
   <section class="section block"><div class="block-head"><h3>CV</h3>${ed !== 'cv' ? html`<span class="row"><button class="btn small ghost" data-act="pdf" data-v="cv">PDF</button><button class="btn small ghost" data-act="edit" data-v="cv">Edit</button></span>` : ''}</div>
     ${ed === 'cv' ? html`<div class="split">${cvEditor(a)}${cvPaper(S.profile, a.cv)}</div>` : cvPaper(S.profile, a.cv)}</section>
   <section class="section block"><div class="block-head"><h3>Cover letter</h3>${ed !== 'letter' ? html`<span class="row"><button class="btn small ghost" data-act="pdf" data-v="letter">PDF</button><button class="btn small ghost" data-act="edit" data-v="letter">Edit</button></span>` : ''}</div>
@@ -1346,6 +1401,7 @@ document.addEventListener('click', (e) => {
     sync: () => guarded(b, () => syncReplies()),
     'sync-one': () => guarded(b, () => syncReplies({ only: id })),
     'quick-send': () => guarded(b, () => approveAndSend(b.dataset.id)),
+    retailor: () => guarded(b, () => generate(b.dataset.id || id, { instructions: 'Adapt the CV closely to this offer (target, key skills, reworded bullets, section order) using only true facts; keep the letter and email consistent.' })),
     'dl-both': () => guarded(b, () => downloadBoth(b.dataset.id)),
     'applied-site': () => { const x = b.dataset.id; if (S.ui.confirm !== `site-${x}`) { S.ui.confirm = `site-${x}`; b.textContent = '✅ Yes, I submitted it'; return; } guarded(b, async () => { S.ui.confirm = null; await markAppliedOnline(x); }); },
     'fu-open': () => { const a = appById(b.dataset.id); S.ui.followup[a.id] = followUpText(a); render(); },
@@ -1378,7 +1434,11 @@ document.addEventListener('submit', (e) => {
     cv: async () => {
       const a = appById(id);
       const exps = [...f.querySelectorAll('.exp')].map((n) => { const eid = n.dataset.exp; const pe = S.profile.experiences.find((x) => x.id === eid); return { id: eid, include: f.querySelector(`[name="inc_${eid}"]`).checked, bullet_indices: pe.bullets.map((_, i) => i).filter((i) => f.querySelector(`[name="b_${eid}_${i}"]`)?.checked) }; });
-      await updateDraft(id, { cv: { ...a.cv, headline: fd.get('headline'), profile: fd.get('profile'), experience_order: exps.map((x) => x.id), experiences: exps, course_highlights: fd.getAll('course') } }, 'CV');
+      const rewrites = {};
+      for (const e of S.profile.experiences) e.bullets.forEach((orig, i) => { const v = String(fd.get(`rw_${e.id}_${i}`) || '').trim(); if (v && v !== orig) (rewrites[e.id] ||= {})[i] = v; });
+      const oldKp = Object.fromEntries((a.cv.key_points || []).map((k) => [k.text, k.basis]));
+      const kp = lines(fd.get('key_points')).slice(0, 5).map((t) => ({ text: t, basis: oldKp[t] || 'written by you' }));
+      await updateDraft(id, { cv: { ...a.cv, target: String(fd.get('target') || '').trim(), headline: fd.get('headline'), profile: fd.get('profile'), key_points: kp, bullet_rewrites: rewrites, experience_order: exps.map((x) => x.id), experiences: exps, course_highlights: fd.getAll('course') } }, 'CV');
       done('CV saved');
     },
     letter: async () => { await updateDraft(id, { letter: { subject_line: fd.get('subject_line'), recipient_line: fd.get('recipient_line'), salutation: fd.get('salutation'), paragraphs: fd.getAll('paragraph').map((x) => String(x).trim()).filter(Boolean), closing: fd.get('closing') } }, 'Letter'); done('Letter saved'); },
