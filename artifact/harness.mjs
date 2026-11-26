@@ -89,6 +89,8 @@ const init = ({ seed, generated }) => {
       if (tool === 'send_message') return { content: [], payload: { id: 'msg-123', threadId: 'thr-1', labelIds: ['SENT'] } };
       if (tool === 'get_trigger') return { content: [], payload: { trigger: { id: 'trig_test', enabled: true, next_run_at: new Date(Date.now() + 20 * 3600e3).toISOString() } } };
       if (tool === 'fire_trigger') return { content: [], payload: { ok: true } };
+      if (tool === 'search_threads' && /mailer-daemon/.test(input.query)) return { content: [], payload: { threads: [] } };
+      if (tool === 'get_thread') return { content: [], payload: { id: 'thr-9', viewUrl: 'https://mail.google.com/x', messages: [{ id: 'm9', subject: 'Re: Candidature', sender: 'Marie <rh@loire-export.example>', date: new Date().toISOString(), plaintextBody: 'Bonjour,\n\nMerci pour votre candidature. Pouvons-nous convenir d’un entretien la semaine prochaine ?\n\nMarie\n\nLe lun. 9 nov. 2026, Fatima a écrit :\n> Je reste disponible pour un entretien.' }] } };
       if (tool === 'search_threads') return { content: [], payload: { threads: [{ id: 'thr-9', viewUrl: 'https://mail.google.com/x', messages: [{ id: 'm9', subject: 'Re: Candidature', snippet: 'Merci pour votre candidature, pouvons-nous convenir d’un entretien ?', sender: 'rh@loire-export.example', date: '2026-11-10T09:00:00Z' }] }] } };
       throw { code: 'tool_error', message: 'unknown' };
     },
@@ -136,9 +138,12 @@ const sha = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'base64
   result.sendDisabledBeforeConfirm = await page.$eval('#send-btn', (b) => b.disabled);
   await page.check('#confirm-send'); await page.waitForFunction(() => !document.getElementById('send-btn').disabled);
   await page.click('#send-btn');
-  await page.waitForSelector('[data-act=replies]', { timeout: 15000 });
-  await page.click('[data-act=replies]'); await page.waitForSelector('[data-act=record-reply]');
-  await page.click('[data-act=record-reply]'); await page.waitForTimeout(300);
+  await page.waitForSelector('[data-act=sync-one]', { timeout: 15000 });
+  await page.click('[data-act=sync-one]'); await page.waitForSelector('.kind.interview', { timeout: 15000 });
+  await page.waitForTimeout(300);
+  await page.goto('https://stage.test/#tracking'); await page.waitForSelector('.board'); await page.waitForTimeout(200); await shot(page, 'd3b-tracking');
+  await page.goto('https://stage.test/#home'); await page.waitForTimeout(300); await shot(page, 'd3c-home-after');
+  await page.goto(`https://stage.test/#${(await page.evaluate(() => [...window.__store.entries()].find(([k, v]) => k.startsWith('applications/') && v.sent)[0])).replace('applications/', 'app-')}`); await page.waitForTimeout(300);
   await shot(page, 'd3-record');
   // 2. interested in the spontaneous one (no verified address)
   await page.goto('https://stage.test/#home'); await page.waitForSelector('#disc-opp2');
@@ -150,6 +155,9 @@ const sha = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'base64
   await page.check('form[data-form=recipient] [name=confirm]'); await page.click('form[data-form=recipient] button[type=submit]');
   await page.waitForSelector('#confirm-send:not([disabled])');
   result.reviewedAllowed = true;
+  await page.goto('https://stage.test/#home'); await page.waitForSelector('.qcard', { timeout: 15000 });
+  await page.check('.qcard [data-act-change=confirm]'); await page.waitForSelector('.qcard [data-act=quick-send]:not([disabled])');
+  result.quickSendEnabled = true; await shot(page, 'd4b-quick');
   // agent page
   await page.goto('https://stage.test/#agent'); await page.waitForSelector('[data-act=run-now]');
   await page.click('[data-act=run-now]'); await page.waitForTimeout(300);

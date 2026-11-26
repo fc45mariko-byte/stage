@@ -16,11 +16,11 @@ export const PDFKIT_URL = 'https://cdn.jsdelivr.net/npm/pdfkit@0.17.2/js/pdfkit.
 const page = `<title>Stage Internship Desk</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
 <style>
 ${css}
 </style>
-<header class="top"><div class="wrap"><div class="brand">Stage<small>Internship desk</small></div><nav class="main" id="nav" aria-label="Sections"></nav></div></header>
+<header class="top"><div class="wrap"><div class="brand">Stage ✨<small>Internship desk</small></div><nav class="main" id="nav" aria-label="Sections"></nav></div></header>
 <main class="wrap" id="main"></main>
 <script src="${PDFKIT_URL}"></script>
 <script>window.__STAGE_FONTS__ = ${JSON.stringify(fontData)};</script>
